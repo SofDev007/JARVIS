@@ -1,0 +1,43 @@
+﻿__pycache__/
+*.py[cod]
+.venv/
+venv/
+kokoro-venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# secrets, keys, runtime data
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.enc
+secrets/
+data/
+
+# model weights (fetched, not tracked)
+models/
+*.task
+*.fst
+*.mdl
+*.dubm
+*.ie
+*.mat
+*.pt
+*.pth
+*.onnx
+*.gguf
+
+# audio
+*.wav
+audition/
+
+# local db and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/

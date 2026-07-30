@@ -1,0 +1,24 @@
+# Email connector: unread message HEADERS over IMAP (stdlib imaplib).
+# The password is referenced BY NAME from the secrets manager — it never
+# appears in this file, in params, in results or in the audit log.
+#   python -m digital_twin.security.secrets_cli set email_password
+name: email
+version: "1.0.0"
+description: Unread email headers over IMAP (password via secrets manager).
+entry: plugin.py
+actions:
+  check_email: sensitive
+  send_email: dangerous
+config:
+  host: imap.example.com
+  username: you@example.com
+  password_secret: email_password   # a NAME in the secret store
+  mailbox: INBOX
+  limit: 5
+  # Sending (send_email) — optional; leave smtp_host empty to disable.
+  smtp_host: ""                      # e.g. smtp.example.com
+  smtp_port: 587
+  allowed_recipient_domains: []      # e.g. [example.com] — empty = any.
+                                     # Recipients outside this list are
+                                     # refused before the confirmation even
+                                     # appears (mis-send containment).

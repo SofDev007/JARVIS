@@ -1,0 +1,49 @@
+# GestureSense configuration.
+# Every value here is optional — anything omitted falls back to built-in
+# defaults. Unknown keys are logged and ignored.
+
+camera:
+  index: 0            # OS camera index
+  width: 1280
+  height: 720
+  fps: 30
+  mirror: true        # selfie view; directional gestures follow what you see
+  reconnect_delay_s: 2.0
+
+tracking:
+  max_hands: 2
+  model_complexity: 1        # 0 = fastest, 1 = more accurate
+  detection_confidence: 0.6
+  tracking_confidence: 0.6
+  landmark_smoothing: 0.55   # EMA alpha; 1.0 disables smoothing
+  # Model file for the MediaPipe *Tasks* backend (mediapipe >= 0.10.15).
+  # Auto-downloaded on first run if missing; ignored by the legacy backend.
+  model_path: models/hand_landmarker.task
+
+gestures:
+  min_confidence: 0.55
+  history: 7                 # frames of voting history
+  min_votes: 4               # majority needed to switch gesture
+
+ui:
+  window_title: GestureSense
+  theme: dark                # dark | light
+  fullscreen: false
+  show_fps: true
+  show_bounding_box: true
+  show_landmarks: true
+  font_scale: 0.55
+  notification_ttl_s: 2.5
+  render_fps_limit: 60
+
+debug:
+  enabled: false
+  show_finger_states: true
+  show_timings: true
+  show_system_usage: true
+
+logging:
+  enabled: true
+  level: INFO
+  directory: logs
+  fps_report_interval_s: 30.0

@@ -1,0 +1,30 @@
+# Digital Twin AI Assistant — Milestone 1 (multimodal kernel)
+#
+#   pip install -r requirements.txt
+#
+# Python 3.10+ recommended.
+
+# Event kernel
+PyYAML>=6.0            # configuration files
+
+# Gesture perception module (vendored GestureSense library)
+mediapipe>=0.10.9      # hand tracking (legacy Solutions or Tasks backend)
+opencv-python==5.0.0   # camera capture + gesture debug overlay (full GUI build;
+                       # do NOT use opencv-python-headless — the debug window
+                       # needs GUI support, and mixing the two shadows cv2)
+numpy>=1.24            # geometry and features
+
+# Optional
+psutil>=5.9            # process metrics in GestureSense debug tooling
+
+# Optional: input synthesis on Windows/macOS (Linux/X11 uses xdotool)
+# pynput>=1.7
+
+# Optional: browser automation (then run: playwright install chromium)
+# playwright>=1.44
+
+# Optional: OS-keyring secrets backend (otherwise an encrypted file is used)
+# keyring>=24
+
+# Development
+pytest>=7.4

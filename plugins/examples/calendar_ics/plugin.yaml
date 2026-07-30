@@ -1,0 +1,12 @@
+# Calendar connector: reads local .ics files (exported from Google
+# Calendar, Outlook, Proton…) — offline, no accounts, no OAuth.
+name: calendar
+version: "1.0.0"
+description: Upcoming events from local .ics calendar files.
+entry: plugin.py
+actions:
+  upcoming_events: sensitive
+  create_event: dangerous
+config:
+  # Directory containing .ics files (set this to your export location).
+  ics_dir: data/calendars

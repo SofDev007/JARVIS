@@ -1,0 +1,12 @@
+# Task connector: a local JSON task list — the simplest thing that is
+# actually useful, and a template for real task-service connectors.
+name: tasks
+version: "1.0.0"
+description: Local task list (add, list, complete).
+entry: plugin.py
+actions:
+  add_task: sensitive
+  list_tasks: sensitive
+  complete_task: sensitive
+config:
+  tasks_file: data/tasks.json

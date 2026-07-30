@@ -1,0 +1,18 @@
+Enabled the debug window (one-time config edit, not a command):
+config/default_config.yaml → gesture.debug_window: false → true
+
+Started the kernel (background, output redirected to a log file):
+python main.py --context presentation > logs/main_run.log 2>&1 &
+
+
+Restarted the kernel to pick up the key (killed the old process, then re-ran the same start command):
+Stop-Process -Id <old_pid> -Force
+python main.py --context presentation > logs/main_run.log 2>&1 &
+
+Checked what was running (to find the PID before stopping):
+Get-Process python -ErrorAction SilentlyContinue | Select-Object Id,StartTime,Path
+
+Closed the camera interface (killed the kernel process, which owns the camera + debug window):
+Stop-Process -Id 7212 -Force
+
+If you want to do this yourself next time in your own terminal (recommended for interactive chat, since a background-launched process can't read your typed input): just run "python main.py --context presentation" directly in PowerShell, and Ctrl+C to stop it.

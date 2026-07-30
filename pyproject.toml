@@ -1,0 +1,58 @@
+# Digital Twin AI Assistant — packaging metadata (M12).
+#
+# Philosophy: the CORE is dependency-lean (PyYAML only) and every heavy
+# capability is an extra, matching the runtime design where perception
+# backends resolve lazily and the kernel starts without them.
+#
+#   pip install .                    # kernel, chat, planner, files, plugins…
+#   pip install .[gesture]           # camera + MediaPipe hand tracking
+#   pip install .[encryption]        # encrypted memory + file secrets backend
+#   pip install .[browser]           # Playwright (then: playwright install chromium)
+#   pip install .[keyring]           # OS-keyring secrets backend
+#   pip install .[voice]             # microphone capture (Vosk model is a
+#                                    # separate manual download — offline STT)
+#   pip install .[dev]               # pytest
+#   pip install .[all]               # everything above
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "digital-twin-assistant"
+version = "0.17.0"
+description = "Modular, multimodal desktop AI assistant: gestures, chat, voice, screen OCR, files, plugins, browser — behind an event bus and hard permission gates."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Vansh" }]
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+gesture = ["mediapipe>=0.10.9", "opencv-python>=4.8.0", "numpy>=1.24"]
+encryption = ["cryptography>=41"]
+browser = ["playwright>=1.44"]
+keyring = ["keyring>=24"]
+semantic = ["sentence-transformers>=2.6"]
+voice = ["sounddevice>=0.4", "vosk>=0.3.45"]
+dev = ["pytest>=7.4"]
+all = [
+    "digital-twin-assistant[gesture,encryption,browser,keyring,voice,semantic,dev]",
+]
+
+[project.scripts]
+digital-twin = "main:main"
+digital-twin-setup = "digital_twin.setup_cli:main"
+digital-twin-memory = "digital_twin.memory.cli:main"
+digital-twin-secrets = "digital_twin.security.secrets_cli:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["digital_twin*", "gesturesense*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,344 @@
+# ---------------------------------------------------------------------------
+# Digital Twin AI Assistant — default configuration
+#
+# Every value here mirrors the built-in defaults. Copy this file, change what
+# you need, and pass it with:  python main.py --config my_config.yaml
+# Unknown keys are reported at startup; invalid values fail fast.
+# ---------------------------------------------------------------------------
+
+logging:
+  enabled: true
+  level: INFO            # DEBUG | INFO | WARNING | ERROR
+  directory: logs        # rotating file logs land here
+
+bus:
+  max_queue_size: 1024         # bounded queue; oldest events shed on overload
+  slow_handler_warn_ms: 50.0   # warn when a subscriber stalls dispatch
+
+gesture:
+  enabled: true
+
+  # Camera
+  camera_index: 0
+  frame_width: 1280
+  frame_height: 720
+  camera_fps: 30
+  mirror: true
+
+  # Hand tracking (MediaPipe)
+  max_hands: 2
+  detection_confidence: 0.6
+  tracking_confidence: 0.6
+  landmark_smoothing: 0.55     # EMA alpha; 1.0 disables smoothing
+  model_complexity: 1          # legacy Solutions backend only
+  model_path: models/hand_landmarker.task   # Tasks backend model file
+
+  # Gesture engine
+  min_confidence: 0.55
+  history: 7                   # temporal vote window (frames)
+  min_votes: 4
+
+  # Event behaviour
+  poll_interval_s: 0.02        # how often results are polled for changes
+  repeat_interval_s: 0.0       # re-publish a held gesture every N s (0 = off)
+
+  # Calibration / per-user tuning
+  gesture_thresholds: {}       # per-gesture min confidence, e.g. {thumbs_up: 0.75}
+  disabled_gestures: []        # semantic ids never published, e.g. [finger_gun]
+
+  # Extensibility & tooling
+  custom_gesture_modules: []   # modules/.py files registering GestureRule classes,
+                               # e.g. [examples/custom_gestures/three_count.py]
+  debug_window: false          # live skeleton/gesture overlay (dev/calibration
+                               # tool). Off by shipped default: an always-on
+                               # camera overlay window is more exposing than the
+                               # code default warrants. Turn on for calibration.
+
+intent:
+  default_context: desktop
+  # context -> gesture -> intent. "*" is the fallback context.
+  # This table is the ONLY place gesture meaning is defined — perception
+  # modules publish what they saw, never what it means.
+  mappings:
+    presentation:
+      thumbs_up: next_slide
+      thumbs_down: previous_slide
+      closed_fist: end_presentation
+    media:
+      peace: play_pause
+      thumbs_up: like
+      pointing_right: seek_forward
+      pointing_left: seek_backward
+    coding:
+      thumbs_up: accept_suggestion
+      thumbs_down: reject_suggestion
+    desktop: {}
+    "*":
+      open_palm: assistant_attention
+
+context_perception:
+  enabled: true
+  poll_interval_s: 1.0         # how often the focused window is sampled
+  publish_window_info: false   # window titles are sensitive; opt in to
+                               # putting them on the bus
+  fallback_context: desktop    # published when no rule matches
+  # Ordered rules; first case-insensitive substring match on the window
+  # title or process name wins.
+  rules:
+    - context: presentation
+      any: [powerpoint, impress, google slides, keynote, .pptx]
+    - context: media
+      any: [youtube, vlc, spotify, netflix, media player]
+    - context: coding
+      any: [visual studio code, intellij, pycharm, vim, terminal, konsole]
+
+screen_reading:
+  enabled: true
+  capture_backend: auto        # auto | scrot | imagemagick | gnome-screenshot
+                               # | screencapture (macOS) | powershell (Windows)
+  ocr_language: eng            # tesseract language code(s), e.g. eng+deu
+  max_chars: 4000              # OCR text published per capture (truncated over)
+  capture_timeout_s: 10.0
+  ocr_timeout_s: 15.0
+  # Privacy is structural: the screen is captured ONLY when the gated
+  # read_screen action executes (SENSITIVE: confirmed by default), the
+  # screenshot file is deleted right after OCR, and the audit log records
+  # character counts — never the text itself.
+
+files:
+  enabled: true
+  allowed_roots: []            # directories file actions may touch, e.g.
+                               # [~/Documents, ~/Downloads]. Empty = file
+                               # actions refuse everything (like the
+                               # open_application allow-list).
+  max_read_chars: 4000         # per read_text_file action
+  max_write_chars: 20000       # per write_text_file action
+  max_list_entries: 100        # list/search result cap
+  max_scan_files: 2000         # find_duplicates hashing cap
+  trash_dir_name: .digital_twin_trash
+                               # delete_file moves here (per root) instead of
+                               # unlinking — a confirmed mistake is recoverable
+
+plugins:
+  enabled: true
+  paths: []                    # directories scanned for plugins, e.g.
+                               # [~/.digital_twin/plugins]. Each plugin is a
+                               # subdirectory with a plugin.yaml manifest
+                               # DECLARING every action it registers and the
+                               # minimum risk of each — undeclared actions are
+                               # refused, declared risk is a floor, and all
+                               # plugin capabilities are namespaced
+                               # <plugin>.<name>. Empty = never load anything.
+
+secrets:
+  backend: auto                # auto | keyring | file. Actions reference
+                               # secrets BY NAME ONLY — values never appear in
+                               # params, results, the audit log or the prompt.
+  file_path: data/secrets.enc  # Fernet-encrypted store (file backend)
+  key_path: data/secrets.key   # key file, created 0600 on first use
+  index_path: data/secrets.index
+                               # names-only index for the keyring backend
+  # Manage with: python -m digital_twin.security.secrets_cli set NAME
+
+browser:
+  enabled: true
+  headless: true
+  allowed_domains: []          # bare hostnames navigation may target, e.g.
+                               # [github.com] (exact or subdomain). Empty =
+                               # any http(s) may be opened, but
+                               # browser_fill_secret refuses to run at all —
+                               # secrets are never typed into pages that were
+                               # not explicitly allow-listed.
+  max_extract_chars: 4000      # per browser_extract_text action
+  navigation_timeout_s: 20.0
+  # Reference driver: Playwright/Chromium — pip install playwright &&
+  # playwright install chromium. Lazy: the kernel starts without it.
+
+dashboard:
+  enabled: false               # local web dashboard (off by default)
+  host: 127.0.0.1              # loopback only unless allow_remote: true
+  port: 8787                   # http://127.0.0.1:8787 (0 = ephemeral)
+  allow_remote: false          # binding beyond loopback is an explicit act
+  recent_events: 200           # live event feed ring buffer
+  # Set security.confirmation: web to approve/deny actions in the
+  # dashboard instead of the terminal — this resolves the stdin conflict
+  # between console chat and console confirmation prompts.
+
+knowledge:
+  enabled: true                # local RAG: ingest -> chunk -> embed -> recall
+  db_path: data/knowledge.db
+  embedder: hashing            # hashing (built-in, offline, dependency-free
+                               # lexical similarity) | semantic
+                               # (sentence-transformers — pip install
+                               # 'digital-twin-assistant[semantic]';
+                               # changing embedders requires re-ingesting)
+  embedding_dim: 256
+  chunk_chars: 800             # paragraph-first packing bound
+  chunk_overlap: 100           # tail carried into the next chunk
+  top_k: 3                     # chunks retrieved per query
+  min_score: 0.12              # cosine floor — below this is noise
+  prompt_max_chars: 2000       # cap on the knowledge section in the prompt
+  watch_paths: []              # directories auto-ingested on a timer (each
+                               # must be inside files.allowed_roots); new and
+                               # changed supported files are picked up, and
+                               # content-hash idempotence makes rescans cheap
+  watch_interval_s: 30.0       # seconds between folder scans
+  # Ingestion actions: ingest_document (confined to files.allowed_roots),
+  # ingest_text, search_knowledge, list_knowledge, forget_document.
+
+memory:
+  enabled: true
+  db_path: data/memory.db      # SQLite, WAL mode; the CLI shares this file
+  encryption: false            # true requires `pip install cryptography`;
+                               # never silently downgrades to plaintext
+  key_path: data/memory.key    # auto-generated 0600 key file when encrypting
+  working_capacity: 200        # recent-activity buffer size (RAM only)
+  working_window_s: 3600.0     # ...and its age limit
+  episodic_max_records: 5000   # cap; lowest importance/least used pruned
+  retention_days: 90.0         # episodic expiry (semantic facts never expire)
+  prune_interval_s: 300.0
+  search_half_life_days: 7.0   # recency decay in search ranking
+
+chat:
+  enabled: true
+  console: true                # type into the kernel terminal (TTY only).
+                               # With console chat active, prefer explicit
+                               # security.permissions rules over interactive
+                               # console confirmations (shared stdin).
+
+llm:
+  enabled: true
+  provider: gemini              # gemini (free tier) | anthropic | ollama (local, offline)
+  model: gemini-3.6-flash       # PINNED, not a *-latest floating alias: a
+                                 # floating alias would silently change the
+                                 # model and invalidate the M19 latency baseline
+  api_key_env: GEMINI_API_KEY   # environment fallback; keys are never
+                                 # read from config files
+  api_key_secret: gemini_api_key
+                                 # secret-store name checked FIRST (store
+                                 # one with the secrets CLI); '' disables
+                                 # get a free key: https://aistudio.google.com/apikey
+  ollama_url: http://localhost:11434
+  max_tokens: 512              # a voice assistant speaks these; 2048 is minutes
+                               # of uninterruptible speech
+  temperature: 0.3
+  timeout_s: 30.0
+  history_turns: 8             # conversation turns kept in the prompt
+  memory_results: 5            # ranked memories injected per prompt (0 = off)
+  # persona: |                 # the assistant's identity/voice, injected atop
+  #   You are KNOWA ...         # every prompt. Defaults to KNOWA (Mark I,
+  #                             # addresses you as "Boss"); uncomment to reshape
+  #                             # who the assistant is without touching code.
+
+voice:
+  enabled: true
+  mode: push_to_talk           # mic opens only per session | continuous
+  engine: vosk                  # vosk (streaming) | whisper (batch, uses the
+                               # openai-whisper package already installed
+                               # locally — no partial transcripts)
+  whisper_model: tiny           # already cached in ~/.cache/whisper; used
+                               # only if engine: whisper
+  model_path: models/vosk-model-small-en-us-0.15
+                               # offline Vosk model — only used if engine: vosk
+  sample_rate: 16000
+  block_ms: 30
+  max_utterance_s: 30.0        # open sessions self-close
+  listen_intents: [assistant_attention]   # open palm = push-to-talk button
+  speak_replies: true          # replies voiced via the gated `speak` action;
+                               # mute with security.permissions: {speak: deny}
+  tts_backend: auto            # auto | espeak-ng | espeak | say | powershell
+  tts_rate_wpm: 175
+  wake_word: knowa             # "KNOWA" — an always-on detector presses
+                              # push-to-talk when it hears the phrase (empty =
+                              # no wake word). Needs the [voice] extra
+                              # (pip install sounddevice) to open the mic, and
+                              # "KNOWA" is a coined word the small Vosk model
+                              # will mis-hear — tune this to what it actually
+                              # transcribes. Utterances are never published by
+                              # the detector; it only triggers.
+  wake_backend: auto          # auto (reuse STT) | scripted (tests)
+
+planner:
+  enabled: true
+  step_timeout_s: 60.0         # per-stage wait (includes confirmation time)
+  max_steps: 20
+  accept_llm_plans: true       # chat may propose plans; every step is still
+                               # validated + permission-gated individually
+  intent_triggers: {}          # e.g. {presentation_ready: presentation_mode}
+  plans: {}
+  # Example routine:
+  # plans:
+  #   presentation_mode:
+  #     description: Focus the deck and start presenting
+  #     on_error: abort        # abort | continue
+  #     steps:
+  #       - {action: focus_window, params: {title: Impress}, label: Focus deck}
+  #       - {action: press_keys, params: {keys: [f5]}, label: Start show}
+
+security:
+  # Default decision per risk level. DANGEROUS has a hard code-enforced
+  # floor of `confirm` — configuration can tighten, never silently allow.
+  risk_defaults:
+    safe: allow
+    sensitive: confirm
+    dangerous: deny
+  permissions: {}              # per-action overrides, e.g. {open_url: allow}
+  confirmation: console        # console (interactive y/N) | auto_deny
+                               # (headless) | web (dashboard approvals;
+                               # requires dashboard.enabled: true)
+  confirmation_timeout_s: 30.0 # unanswered prompts fail closed
+  audit_file: logs/audit.jsonl # append-only JSONL with full provenance
+  audit_max_bytes: 5000000     # size-based rollover to timestamped files
+
+automation:
+  enabled: true
+  max_queue_size: 64           # pending intents; overflow drops + audits
+  action_timeout_s: 30.0       # hard execution timeout per action
+  input_backend: auto          # auto | xdotool (Linux/X11) | pynput (pip install)
+  max_type_text_chars: 500     # hard cap for one type_text action
+  applications: {}             # open_application allow-list: name -> command,
+                               # e.g. {browser: firefox, editor: "code -n"}
+  # intent -> {action, params}. Unbound intents are audited, not errors.
+  intent_bindings:
+    assistant_attention:
+      action: notify
+      params: {title: Digital Twin, message: At your service.}
+    like:
+      action: log_message
+      params: {message: Liked the current item.}
+    next_slide:
+      action: nav_key          # SAFE: arrow keys only, no prompt per slide
+      params: {key: right}
+    previous_slide:
+      action: nav_key
+      params: {key: left}
+    seek_forward:
+      action: nav_key
+      params: {key: right}
+    seek_backward:
+      action: nav_key
+      params: {key: left}
+    play_pause:
+      action: media_key        # SAFE: media keys are bounded and benign
+      params: {key: play_pause}
+    end_presentation:
+      action: press_keys       # SENSITIVE: confirmed by default
+      params: {keys: [escape]}
+    read_screen:
+      action: read_screen      # SENSITIVE: one confirmed capture + OCR
+      params: {}
+
+# Named per-user profiles overriding the gesture/intent sections only.
+# Select with `profiles.active` or `python main.py --profile <name>`.
+profiles:
+  active: default
+  available:
+    default: {}
+    # Example:
+    # arnav:
+    #   gesture:
+    #     repeat_interval_s: 0.8
+    #     gesture_thresholds: {thumbs_up: 0.7}
+    #     disabled_gestures: [finger_gun]
+    #   intent:
+    #     default_context: coding
