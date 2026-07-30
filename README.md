@@ -495,7 +495,7 @@ See `CHANGELOG.md` for history and `docs/architecture.md` for detail.
 
 Model weights are not tracked in git. A fresh clone needs:
 
-- `models/hand_landmarker.task` — MediaPipe hand landmarker
-- `models/vosk-model-small-en-us-0.15/` — Vosk small English ASR
+- `models/hand_landmarker.task` â€” MediaPipe hand landmarker
+- `models/vosk-model-small-en-us-0.15/` â€” Vosk small English ASR
 
 Download both before first run.
