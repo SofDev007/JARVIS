@@ -3,6 +3,89 @@
 All notable changes to the Digital Twin AI Assistant.
 Format follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased] — Milestone 18: ACL hardening & audit integrity
+
+### Phase 1 — dependency and config repair (already landed)
+- **OpenCV pinned** to a single package: two conflicting OpenCV wheels had
+  been installed simultaneously (see debt note below on the missing
+  version ceiling / lockfile that allowed it).
+- **Config drift resolved** so the shipped YAML matches the dataclass
+  defaults: `gesture.debug_window`, `llm.model=gemini-3.6-flash`,
+  `llm.max_tokens=512`, `voice.wake_word=knowa`.
+- **Plugin sandbox encoding bug** fixed.
+- **Debug-window test** monkeypatched instead of requiring a display.
+- **`tests/_keyfile.py`** added: real `icacls`-based owner-only assertions
+  (no skips added, no assertions removed).
+
+### Phase 2 (Phase A here) — ACL enforcement, the actual finding
+
+#### Added
+- **`digital_twin/security/fsacl.py`** — cross-platform owner-only ACLs:
+  - `ensure_private_dir(path)` creates the directory (if absent) and makes
+    it owner-only. On Windows it strips inheritance and grants only the
+    current user via `icacls /inheritance:r /grant:r`, retaining SYSTEM and
+    Administrators (well-known SIDs, so localisation-proof); the `(OI)(CI)`
+    flags then propagate owner-only to every file created inside. On POSIX,
+    `chmod 0o700`.
+  - `ensure_private_file(path)` — the per-file backstop (Windows `icacls`,
+    POSIX `chmod 0o600`).
+  - `verify_private(path)` returns the broad principals (`Everyone`,
+    `BUILTIN\Users`, `Authenticated Users`) still granted access — `[]`
+    means owner-only. Never raises.
+  - `secure_and_verify_state(config)` — the **startup durability check**:
+    secures the state *directories* (`data/`, `logs/`) and then verifies
+    them and their contents, logging a prominent `INSECURE PERMISSIONS`
+    warning per offending path/principal. Checks directories, not just
+    known filenames, so a regenerated directory is caught **before** any
+    secret is written into it. Never fatal.
+- 4 new tests (`tests/test_fsacl.py` ×3, junction containment ×1): a key
+  created inside a deliberately world-accessible directory is still
+  owner-only; `verify_private` detects an injected broad ACE; the startup
+  check logs and does not raise.
+
+#### Fixed / Security
+- **The finding**: `os.open(..., 0o600)` / `os.chmod(..., 0o600)` in
+  `secrets.py` and `codec.py` only toggle the read-only attribute on NTFS —
+  they never touch the ACL. `data/` and `logs/` and their contents
+  (`secrets.key`, `secrets.enc`, `memory.db`, `knowledge.db`,
+  `audit.jsonl`, rolled logs) inherited broad ACEs from the `D:\` tree
+  (`Authenticated Users:(M)`, `BUILTIN\Users:(RX)`), so any local account
+  could read them. Exposure was local-accounts-only (machine not
+  domain-joined). Now:
+  - Key/secret/log creation paths (`secrets.py`, `codec.py`, `audit.py`)
+    call `ensure_private_dir` on the parent before writing, and
+    `ensure_private_file` on the key files and the atomic temp file as a
+    backstop. The existing `0o600` calls are kept as the POSIX path.
+  - `main.py` runs `secure_and_verify_state` at startup (after logging is
+    up, before any module builds), re-securing regenerated directories and
+    warning on anything still broad.
+  - Existing files/directories were remediated in place; the broad
+    principals are gone from every path (before/after ACLs in the M18 PR).
+- **Constant-time dashboard token** (`dashboard/server.py`): the
+  `X-Dashboard-Token` check now uses `secrets.compare_digest` (bytes) in
+  place of `==`, closing a timing side-channel on the session token.
+- **Directory-junction containment test** (`tests/test_file_actions.py`):
+  `mklink /J` needs no privilege, so this runs unconditionally — junctions
+  are the likelier real-world escape vector on Windows. The existing
+  symlink test now **skips with a specific reason** when
+  `SeCreateSymbolicLinkPrivilege` is unavailable, so coverage never
+  silently depends on Developer Mode.
+
+### Debt / follow-ups (recorded, not done)
+- **No Python upper bound, no lockfile.** `requires-python = ">=3.10"` has
+  no upper bound and there is no lockfile or virtualenv — this is exactly
+  how two conflicting OpenCV packages came to be installed at once. A
+  lockfile (or at least a pinned, bounded dependency set in a managed
+  venv) is the real fix.
+- **Runtime state should live under `%LOCALAPPDATA%\Knowa\`.** Writing
+  `data/` and `logs/` relative to the CWD is not the correct Windows
+  convention. Deferred because the write paths are literal relative
+  strings across four config classes with no single chokepoint, and
+  relocating them would break the shipped==dataclass invariant that Phase 1
+  just restored. (This missing chokepoint is also why ACL enforcement is
+  applied at each creation site plus a startup sweep, rather than one
+  place.)
+
 ## [Unreleased] — Gemini backend
 
 ### Added

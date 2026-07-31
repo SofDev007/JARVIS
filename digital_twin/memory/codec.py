@@ -88,12 +88,20 @@ class FernetCodec(MemoryCodec):
             if not key:
                 raise CodecError(f"Memory key file is empty: {path}")
             return key
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from digital_twin.security.fsacl import (
+            ensure_private_dir,
+            ensure_private_file,
+        )
+
+        # Owner-only directory before content is written: on NTFS the 0o600
+        # below only toggles read-only, so the ACL is what actually protects
+        # the key.
+        ensure_private_dir(path.parent)
         key = Fernet.generate_key()
-        # Owner-only before content is written.
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(key)
+        ensure_private_file(path)  # per-file backstop
         logger.info("Generated new memory encryption key at %s", path)
         return key
 

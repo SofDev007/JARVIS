@@ -33,10 +33,14 @@ class AuditLog:
     """Thread-safe append-only JSONL audit writer with rollover."""
 
     def __init__(self, path: str | Path, max_bytes: int = 5_000_000):
+        from digital_twin.security.fsacl import ensure_private_dir
+
         self._path = Path(path)
         self._max_bytes = max(1024, int(max_bytes))
         self._lock = threading.Lock()
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only log directory: the audit trail is evidence, so a local
+        # account must not be able to read (or later, rewrite) it.
+        ensure_private_dir(self._path.parent)
 
     @property
     def path(self) -> Path:

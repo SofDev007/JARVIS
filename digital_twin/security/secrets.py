@@ -34,6 +34,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from digital_twin.configuration.settings import SecretsConfig
+from digital_twin.security.fsacl import ensure_private_dir, ensure_private_file
 
 logger = logging.getLogger(__name__)
 
@@ -106,13 +107,16 @@ class EncryptedFileSecretStore(SecretStore):
         from cryptography.fernet import Fernet
 
         key = Fernet.generate_key()
-        self._key_path.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only directory first: on NTFS this is what actually enforces
+        # the guarantee — the 0o600 below only toggles the read-only attribute.
+        ensure_private_dir(self._key_path.parent)
         descriptor = os.open(
             self._key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
         )
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(key)
-        logger.info("Created secrets key file %s (0600)", self._key_path)
+        ensure_private_file(self._key_path)  # per-file backstop
+        logger.info("Created secrets key file %s (owner-only)", self._key_path)
         return key
 
     def _load(self) -> dict[str, str]:
@@ -129,7 +133,7 @@ class EncryptedFileSecretStore(SecretStore):
         blob = self._cipher().encrypt(
             json.dumps(data, ensure_ascii=False).encode("utf-8")
         )
-        self._file.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(self._file.parent)
         descriptor, tmp_name = tempfile.mkstemp(
             dir=str(self._file.parent), prefix=".secrets-"
         )
@@ -137,6 +141,7 @@ class EncryptedFileSecretStore(SecretStore):
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(blob)
             os.chmod(tmp_name, 0o600)
+            ensure_private_file(tmp_name)  # per-file backstop before the swap
             os.replace(tmp_name, self._file)  # atomic
         except BaseException:
             try:
