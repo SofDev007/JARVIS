@@ -7,7 +7,15 @@ import threading
 
 import pytest
 
-from digital_twin.security.audit import AuditLog
+import logging
+
+from digital_twin.security.audit import (
+    GENESIS,
+    AuditLog,
+    _ordered_chain_files,
+    migrate_audit_chain,
+    verify_chain,
+)
 from digital_twin.security.confirmation import (
     AutoDenyConfirmation,
     ConsoleConfirmation,
@@ -144,3 +152,154 @@ def test_audit_serialises_non_json_values(tmp_path):
     audit.record(status="completed", odd=RiskLevel.SAFE)  # enum → str fallback
     (entry,) = audit.tail(1)
     assert "SAFE" in entry["odd"]
+
+
+# ---------------------------------------------------------------------------
+# AuditLog — tamper-evident hash chain (M18 Phase B)
+# ---------------------------------------------------------------------------
+def _lines(path):
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def _rewrite(path, lines):
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_audit_chain_intact_on_append(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    audit = AuditLog(path)
+    for i in range(10):
+        audit.record(status="ok", i=i)
+    assert audit.verify_chain() is None
+    # The first record chains to the genesis constant.
+    assert json.loads(_lines(path)[0])["prev"] == GENESIS
+
+
+def test_audit_chain_detects_middle_mutation(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    audit = AuditLog(path)
+    for i in range(5):
+        audit.record(status="ok", i=i)
+    lines = _lines(path)
+    victim = json.loads(lines[2])
+    victim["status"] = "tampered"  # same prev, different content → hash changes
+    lines[2] = json.dumps(victim)
+    _rewrite(path, lines)
+    broken = verify_chain(path)
+    assert broken is not None
+    # Detected at the successor: record 3 no longer chains to record 2.
+    assert broken["index"] == 3
+
+
+def test_audit_chain_detects_deletion(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    audit = AuditLog(path)
+    for i in range(5):
+        audit.record(status="ok", i=i)
+    lines = _lines(path)
+    del lines[2]
+    _rewrite(path, lines)
+    broken = verify_chain(path)
+    assert broken is not None
+    assert broken["index"] == 2  # the record now at slot 2 doesn't chain
+
+
+def test_audit_chain_detects_reordering(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    audit = AuditLog(path)
+    for i in range(5):
+        audit.record(status="ok", i=i)
+    lines = _lines(path)
+    lines[1], lines[2] = lines[2], lines[1]
+    _rewrite(path, lines)
+    broken = verify_chain(path)
+    assert broken is not None
+    assert broken["index"] == 1
+
+
+def test_audit_chain_survives_process_restart(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    first = AuditLog(path)
+    for i in range(3):
+        first.record(status="ok", i=i)
+    # A fresh instance on the same file simulates a restart: it must resume the
+    # chain, not start a new one from genesis.
+    second = AuditLog(path)
+    second.record(status="ok", i=99)
+    assert second.verify_chain() is None
+    lines = _lines(path)
+    assert len(lines) == 4
+    # The appended record chains to the record written by the previous process.
+    assert json.loads(lines[3])["prev"] != GENESIS
+
+
+def test_audit_chain_holds_across_a_rollover_boundary(tmp_path):
+    # The seam where chain implementations usually break: the running hash must
+    # survive the rollover rename so the first record of the new file chains to
+    # the last record of the rolled file.
+    path = tmp_path / "audit.jsonl"
+    audit = AuditLog(path, max_bytes=1024)
+    for i in range(40):  # forces several rollovers
+        audit.record(status="ok", filler="x" * 40, i=i)
+
+    rolled = list(tmp_path.glob("audit-*.jsonl"))
+    assert rolled, "expected at least one rollover for this test to mean anything"
+
+    # 1) The whole chain (all rolled files + active) verifies as one.
+    assert audit.verify_chain() is None
+
+    # 2) Explicit seam assertion, robust to same-second rolls: the active
+    #    file's first record chains to the last rolled file's last record.
+    ordered = _ordered_chain_files(path)
+    assert ordered[-1] == path and len(ordered) >= 2
+    last_rolled = ordered[-2]
+    from digital_twin.security.audit import _record_hash
+
+    last_rolled_tail = json.loads(_lines(last_rolled)[-1])
+    active_head = json.loads(_lines(path)[0])
+    assert active_head["prev"] == _record_hash(last_rolled_tail)
+    assert active_head["prev"] != GENESIS  # it did NOT restart the chain
+
+    # 3) A break introduced in a rolled file is still caught across the boundary.
+    lines = _lines(last_rolled)
+    victim = json.loads(lines[0])
+    victim["status"] = "tampered"
+    lines[0] = json.dumps(victim)
+    _rewrite(last_rolled, lines)
+    assert verify_chain(path) is not None
+
+
+def test_audit_migration_is_non_destructive_and_chains(tmp_path):
+    # A legacy, unchained log (records without a 'prev' field).
+    legacy = tmp_path / "audit.jsonl"
+    records = [json.dumps({"timestamp": f"t{i}", "status": "ok", "i": i})
+               for i in range(4)]
+    legacy.write_text("\n".join(records) + "\n", encoding="utf-8")
+    original = legacy.read_text(encoding="utf-8")
+
+    source, dest = migrate_audit_chain(legacy)
+    assert source == legacy
+    assert dest == tmp_path / "audit.chained.jsonl"
+    assert legacy.read_text(encoding="utf-8") == original  # untouched
+    assert verify_chain(dest) is None  # the copy is a valid chain
+    assert json.loads(_lines(dest)[0])["prev"] == GENESIS
+
+    with pytest.raises(FileExistsError):  # never overwrites
+        migrate_audit_chain(legacy)
+
+
+def test_audit_startup_warns_on_broken_chain_but_does_not_raise(tmp_path,
+                                                                caplog):
+    path = tmp_path / "audit.jsonl"
+    audit = AuditLog(path)
+    for i in range(3):
+        audit.record(status="ok", i=i)
+    lines = _lines(path)
+    victim = json.loads(lines[1])
+    victim["status"] = "tampered"
+    lines[1] = json.dumps(victim)
+    _rewrite(path, lines)
+
+    with caplog.at_level(logging.WARNING):
+        AuditLog(path)  # startup verification runs here; must not raise
+    assert any("AUDIT CHAIN BROKEN" in rec.message for rec in caplog.records)

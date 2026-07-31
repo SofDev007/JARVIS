@@ -71,7 +71,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com); versions follow S
   `SeCreateSymbolicLinkPrivilege` is unavailable, so coverage never
   silently depends on Developer Mode.
 
+### Phase B — tamper-evident audit log (hash chain)
+
+#### Added
+- **Hash-chained audit log** (`security/audit.py`): every record carries
+  `prev`, the SHA-256 of the **canonical** serialisation (sorted keys, fixed
+  separators, explicit UTF-8) of the record before it; the first record chains
+  to a genesis constant (64 hex zeros). Detects mutation of a middle record,
+  deletion, and reordering.
+  - **Chains across rollover boundaries** — the running hash is held in memory
+    and deliberately *not* reset on the rollover rename, so the first record of
+    a new file chains to the last record of the rolled file. `verify_chain()`
+    walks rolled files + active file in **true creation order** (parsed
+    `(stamp, counter)`, not a lexical sort that mis-orders same-second rolls).
+  - **`verify_chain()`** returns `{index, file, reason}` for the first break, or
+    `None` if intact. Read-only and standalone.
+  - **Startup verification**: `AuditLog.__init__` verifies the chain and logs a
+    prominent `AUDIT CHAIN BROKEN` warning if broken — never raises. Resumes
+    the chain from the on-disk tail, so it survives a process restart.
+  - **Non-destructive migration** (`migrate_audit_chain`): writes a chained copy
+    of a legacy/unchained log, leaves the original untouched, reports both
+    paths, refuses to overwrite.
+- **`digital_twin/security/audit_cli.py`** (+ `digital-twin-audit` console
+  script): PowerShell-invocable `verify` / `migrate` over the whole chain.
+  `python -m digital_twin.security.audit_cli verify [--path logs\audit.jsonl]`.
+- 8 new tests (`tests/test_security.py`): intact on append; detects middle
+  mutation / deletion / reordering; survives a process restart; **holds across
+  a rollover boundary** (with an explicit seam assertion — active-file head
+  chains to last-rolled-file tail — plus a break injected in a rolled file
+  still caught); migration is non-destructive and chains; startup warns and
+  does not raise.
+
+#### Threat model
+- `docs/THREAT_MODEL.md` §4.3 (audit-log integrity, asset A7) moved 🟡 → ✅.
+  Threat-model updates now ship with each security milestone.
+
 ### Debt / follow-ups (recorded, not done)
+- **Audit tail record.** The chain cannot detect mutation of the single last
+  record on disk (no successor `prev` contradicts it); a sealed-tail marker is
+  future work. The Phase A owner-only ACL bounds the gap meanwhile.
 - **No Python upper bound, no lockfile.** `requires-python = ">=3.10"` has
   no upper bound and there is no lockfile or virtualenv — this is exactly
   how two conflicting OpenCV packages came to be installed at once. A

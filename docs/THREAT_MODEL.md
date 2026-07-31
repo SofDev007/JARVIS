@@ -184,17 +184,31 @@ and a startup verification check that catches regenerated directories.
 so every project on that drive is affected. Tightening `D:\Fable` addresses
 the cause; the Knowa fix addresses the symptom and should exist regardless.
 
-### 4.3 Audit log tampering 🟡 → ⏳ M18 Phase B
+### 4.3 Audit log tampering ✅ M18 Phase B
 
 **Actor:** T1 · **Asset:** A7
 
-Append-only by convention only — no hash chain, no signatures. Combined with
-4.2, any local account can rewrite `logs/audit.jsonl` wholesale.
+Each record carries `prev`, the SHA-256 of the *canonical* form of the record
+before it; the first chains to a genesis constant. `verify_chain()` walks the
+whole chain — every rolled file plus the active one, in true creation order —
+and names the first break. Mutation of a middle record, deletion, and
+reordering are all detected. The chain continues **across rollover
+boundaries**: the running hash lives in memory and survives the rename, so the
+first record of a new file chains to the last record of the rolled one.
+Verified at startup (loud warning, never fatal), on demand via
+`python -m digital_twin.security.audit_cli verify`, and existing (unchained)
+logs migrate non-destructively with the same CLI.
 
-**Dependency:** the Phase B hash chain is meaningless without 4.2 resolved
-first. An attacker with write access recomputes the entire chain over
-doctored records and leaves no evidence. Tamper-*evidence* assumes the
-attacker can append or mutate, not rewrite.
+**Depended on Phase A (now satisfied):** a hash chain over a file any local
+account can rewrite is theatre — the attacker recomputes the chain over
+doctored records. Phase A's owner-only ACL is what makes this
+tamper-*evidence* meaningful: the log can no longer be read or rewritten
+wholesale by another local account.
+
+**Known ceiling:** the chain protects every record whose successor exists, so
+mutation of the *last* record on disk is not caught by the chain alone (no
+following `prev` contradicts it). A sealed-tail marker is future work; the
+Phase A ACL bounds the gap meanwhile.
 
 ### 4.4 Unauthenticated camera stream ❌ → ⏳ M18 Phase 3
 
