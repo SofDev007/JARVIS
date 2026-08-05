@@ -8,6 +8,7 @@ import threading
 import pytest
 
 import logging
+import sys
 
 from digital_twin.security.audit import (
     GENESIS,
@@ -15,6 +16,7 @@ from digital_twin.security.audit import (
     _ordered_chain_files,
     migrate_audit_chain,
     verify_chain,
+    verify_with_anchor,
 )
 from digital_twin.security.confirmation import (
     AutoDenyConfirmation,
@@ -303,3 +305,80 @@ def test_audit_startup_warns_on_broken_chain_but_does_not_raise(tmp_path,
     with caplog.at_level(logging.WARNING):
         AuditLog(path)  # startup verification runs here; must not raise
     assert any("AUDIT CHAIN BROKEN" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# AuditLog — DPAPI tail anchor (M18 Phase 3A): closes the tail-mutation and
+# truncation gap the chain alone cannot see. DPAPI is Windows-only.
+# ---------------------------------------------------------------------------
+_win_only = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="the tail anchor is DPAPI-protected (Windows only)")
+
+
+def _anchored_log(tmp_path):
+    from digital_twin.security.tail_anchor import TailAnchor
+
+    anchor_path = tmp_path / "audit.anchor"
+    audit = AuditLog(tmp_path / "audit.jsonl", anchor=TailAnchor(anchor_path))
+    return audit, anchor_path
+
+
+@_win_only
+def test_anchor_passes_when_chain_and_tail_are_intact(tmp_path):
+    audit, _ = _anchored_log(tmp_path)
+    for i in range(4):
+        audit.record(status="ok", i=i)
+    assert audit.verify_with_anchor() is None
+
+
+@_win_only
+def test_anchor_detects_tail_record_mutation(tmp_path):
+    # The last record has no successor, so the chain alone cannot catch this.
+    audit, _ = _anchored_log(tmp_path)
+    for i in range(4):
+        audit.record(status="ok", i=i)
+    path = tmp_path / "audit.jsonl"
+    lines = _lines(path)
+    victim = json.loads(lines[-1])
+    victim["status"] = "tampered"  # prev unchanged → chain still "valid"
+    lines[-1] = json.dumps(victim)
+    _rewrite(path, lines)
+
+    assert verify_chain(path) is None            # chain can't see it…
+    broken = audit.verify_with_anchor()          # …but the anchor can.
+    assert broken is not None and broken.get("tail_anchor")
+
+
+@_win_only
+def test_anchor_detects_truncation_of_the_last_records(tmp_path):
+    audit, _ = _anchored_log(tmp_path)
+    for i in range(6):
+        audit.record(status="ok", i=i)
+    path = tmp_path / "audit.jsonl"
+    lines = _lines(path)
+    _rewrite(path, lines[:-2])  # drop the last two records
+
+    assert verify_chain(path) is None            # a shorter chain is still valid
+    broken = audit.verify_with_anchor()
+    assert broken is not None and broken.get("tail_anchor")
+
+
+@_win_only
+def test_missing_anchor_degrades_to_warning_and_still_starts(tmp_path, caplog):
+    from digital_twin.security.tail_anchor import TailAnchor
+
+    audit, anchor_path = _anchored_log(tmp_path)
+    for i in range(3):
+        audit.record(status="ok", i=i)
+    anchor_path.unlink()  # simulate an install predating the anchor
+
+    with caplog.at_level(logging.WARNING):
+        # Startup verification runs in __init__; a missing anchor must NOT raise.
+        restarted = AuditLog(tmp_path / "audit.jsonl",
+                             anchor=TailAnchor(anchor_path))
+    assert restarted is not None
+    assert any("tail anchor" in rec.message.lower() for rec in caplog.records)
+    # The module contract: no anchor → anchor_missing, not a hard failure.
+    result = verify_with_anchor(tmp_path / "audit.jsonl", None)
+    assert result is not None and result.get("anchor_missing")

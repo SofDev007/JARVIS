@@ -448,6 +448,13 @@ class SecurityConfig:
     confirmation_timeout_s: float = 30.0
     audit_file: str = "logs/audit.jsonl"
     audit_max_bytes: int = 5_000_000
+    audit_anchor_file: str = "data/audit.anchor"
+    """DPAPI-protected tail anchor for the audit chain (Windows). Lives under
+    ``data/`` — owner-only and *outside* ``logs/`` — so tail mutation and
+    truncation are detectable. Empty disables anchoring."""
+    devices_dir: str = "data/devices"
+    """Directory holding the enrolled-device registry and each device's
+    DPAPI-protected private key. Owner-only (under ``data/``)."""
 
 
 @dataclass(frozen=True)
@@ -873,6 +880,8 @@ def _validate(config: AppConfig) -> AppConfig:
         (bool(security.audit_file), "security.audit_file must be non-empty"),
         (security.audit_max_bytes >= 1024,
          "security.audit_max_bytes must be >= 1024"),
+        (bool(str(security.devices_dir).strip()),
+         "security.devices_dir must be a directory path"),
         (automation.max_queue_size >= 1,
          "automation.max_queue_size must be >= 1"),
         (automation.input_backend in ("auto", "xdotool", "pynput"),

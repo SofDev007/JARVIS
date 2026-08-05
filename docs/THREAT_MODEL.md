@@ -160,7 +160,7 @@ against *accident*, and only weakly a control against *deception*.
 5. **Ingestion is an explicit act.** Folder watching should quarantine new
    documents pending approval rather than auto-indexing.
 
-### 4.2 Key and secret exposure via filesystem ACLs 🟡 → ⏳ M18 Phase A
+### 4.2 Key and secret exposure via filesystem ACLs ✅ M18 Phase A
 
 **Actor:** T1 · **Assets:** A2, A3, A4, A5, A7
 
@@ -180,9 +180,12 @@ exploitation requires prior local presence.
 stripped, per-file enforcement as backstop, remediation of existing files,
 and a startup verification check that catches regenerated directories.
 
-**Root cause note:** the broad ACEs originate upstream in the `D:\` tree,
-so every project on that drive is affected. Tightening `D:\Fable` addresses
-the cause; the Knowa fix addresses the symptom and should exist regardless.
+**Root cause note (still open):** the Knowa fix is **complete** — `data/`,
+`logs/`, and their contents are owner-only, enforced at every creation site
+and re-verified at startup. But the broad ACEs *originate upstream* in the
+`D:\` tree, so every other project on that drive remains exposed. The
+drive-wide misconfiguration is **not** fixed by Knowa and should be addressed
+by tightening `D:\Fable` (or the drive root) independently.
 
 ### 4.3 Audit log tampering ✅ M18 Phase B
 
@@ -238,10 +241,10 @@ system would manufacture the exact attack that compromises it.
 - Anti-loopback: fingerprint own TTS output, reject matching wake events
   within a short window.
 
-### 4.6 Weak token comparison 🟡 → ⏳ M18 Phase A
+### 4.6 Weak token comparison ✅ M18 Phase A
 
-`server.py:272` uses `==` on the dashboard token. Timing-observable.
-Negligible over loopback, one line to fix, no reason to carry it forward.
+`server.py` compared the dashboard token with `==` (timing-observable).
+Now uses `secrets.compare_digest` on the encoded bytes.
 
 ### 4.7 Plugin sandbox escape 🟡
 
@@ -301,7 +304,7 @@ a reproducible environment and a machine-specific one.
 
 | # | Boundary | Enforcement | Status |
 |---|---|---|---|
-| B1 | Operator ↔ other local accounts | Filesystem ACLs | ❌ → M18 Phase A |
+| B1 | Operator ↔ other local accounts | Filesystem ACLs | ✅ M18 Phase A |
 | B2 | Knowa ↔ plugins | Subprocess sandbox + manifest | 🟡 untested adversarially |
 | B3 | **Trusted input ↔ untrusted content** | **None** | ❌ **§4.1 — the critical gap** |
 | B4 | Host ↔ network | Loopback bind; Tailscale from M22 | 🟡 |

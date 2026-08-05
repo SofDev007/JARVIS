@@ -45,7 +45,7 @@ from digital_twin.automation.builtin import register_builtin_actions
 from digital_twin.automation.input_actions import register_input_actions
 from digital_twin.automation.input_backend import create_input_backend
 from digital_twin.automation.registry import ActionRegistry, ActionSpec
-from digital_twin.security.audit import AuditLog
+from digital_twin.security.audit import AuditLog, build_audit_log
 from digital_twin.security.confirmation import (
     ConfirmationProvider,
     create_confirmation_provider,
@@ -385,7 +385,7 @@ def build_action_dispatcher(
     )
     provider = confirmation or create_confirmation_provider(
         security.confirmation)
-    audit = AuditLog(security.audit_file, max_bytes=security.audit_max_bytes)
+    audit = build_audit_log(security)  # includes the DPAPI tail anchor
     return ActionDispatcher(
         config=automation,
         registry=registry,

@@ -103,6 +103,47 @@ def _ordered_chain_files(path: Path) -> list[Path]:
     return files
 
 
+def _walk_chain(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
+    """Walk the whole chain once. Return ``(break_or_None, record_hashes)``.
+
+    ``record_hashes`` holds every verified record's hash in order (up to a
+    break, if any) — the anchor check needs these, the plain verifier ignores
+    them.
+    """
+    expected = GENESIS
+    index = 0
+    hashes: list[str] = []
+    for chain_file in _ordered_chain_files(path):
+        try:
+            lines = chain_file.read_text(encoding="utf-8-sig").splitlines()
+        except OSError as exc:
+            return ({"index": index, "file": chain_file.name,
+                     "reason": f"cannot read file: {exc}"}, hashes)
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                return ({"index": index, "file": chain_file.name,
+                         "reason": f"line is not valid JSON: {exc}"}, hashes)
+            if "prev" not in entry:
+                return ({"index": index, "file": chain_file.name,
+                         "reason": "record has no 'prev' field — log predates "
+                                   "hash chaining (run 'python -m "
+                                   "digital_twin.security.audit_cli migrate')"},
+                        hashes)
+            if entry["prev"] != expected:
+                return ({"index": index, "file": chain_file.name,
+                         "reason": "chain broken: 'prev' does not match the hash "
+                                   "of the preceding record (mutation, deletion, "
+                                   "or reordering)"}, hashes)
+            expected = _record_hash(entry)
+            hashes.append(expected)
+            index += 1
+    return (None, hashes)
+
+
 def verify_chain(path: str | Path) -> dict[str, Any] | None:
     """Verify the whole chain (rolled files + active). Return ``None`` if
     intact, else ``{"index", "file", "reason"}`` for the first break.
@@ -110,35 +151,38 @@ def verify_chain(path: str | Path) -> dict[str, Any] | None:
     Read-only and standalone — the CLI uses this without constructing an
     :class:`AuditLog` (so verifying never re-secures or writes anything).
     """
-    expected = GENESIS
-    index = 0
-    for chain_file in _ordered_chain_files(Path(path)):
-        try:
-            lines = chain_file.read_text(encoding="utf-8-sig").splitlines()
-        except OSError as exc:
-            return {"index": index, "file": chain_file.name,
-                    "reason": f"cannot read file: {exc}"}
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError as exc:
-                return {"index": index, "file": chain_file.name,
-                        "reason": f"line is not valid JSON: {exc}"}
-            if "prev" not in entry:
-                return {"index": index, "file": chain_file.name,
-                        "reason": "record has no 'prev' field — log predates "
-                                  "hash chaining (run 'python -m "
-                                  "digital_twin.security.audit_cli migrate')"}
-            if entry["prev"] != expected:
-                return {"index": index, "file": chain_file.name,
-                        "reason": "chain broken: 'prev' does not match the hash "
-                                  "of the preceding record (mutation, deletion, "
-                                  "or reordering)"}
-            expected = _record_hash(entry)
-            index += 1
-    return None
+    return _walk_chain(Path(path))[0]
+
+
+def verify_with_anchor(
+    path: str | Path, anchor_tail: str | None
+) -> dict[str, Any] | None:
+    """Verify the chain *and* that its tail matches the DPAPI-anchored hash.
+
+    Catches what the chain alone cannot: mutation of the last record and
+    truncation from the end. ``anchor_tail`` is the hash read back from the
+    anchor (``None`` if absent). Returns ``None`` if all is well; otherwise a
+    dict describing the problem — with ``anchor_missing: True`` for the benign
+    "no anchor yet" case so callers can warn rather than alarm.
+    """
+    break_info, hashes = _walk_chain(Path(path))
+    if break_info is not None:
+        return break_info  # a chain break trumps any anchor question
+    if anchor_tail is None:
+        return {"reason": "no audit tail anchor present — tail mutation and "
+                          "truncation are not detectable until one is written",
+                "anchor_missing": True}
+    if hashes and hashes[-1] == anchor_tail:
+        return None  # exact match: nothing removed or altered at the tail
+    if anchor_tail in hashes:
+        # The anchored record still exists with newer records after it — the
+        # anchor merely lagged behind later appends (e.g. a crash between the
+        # append and the anchor write). Benign.
+        return None
+    return {"reason": "TAIL ANCHOR MISMATCH: the anchored tail hash is absent "
+                      "from the chain — the last record was mutated or records "
+                      "were truncated from the end",
+            "tail_anchor": True}
 
 
 def _tail_hash(path: Path) -> str:
@@ -194,12 +238,14 @@ def migrate_audit_chain(
 class AuditLog:
     """Thread-safe, append-only, hash-chained JSONL audit writer with rollover."""
 
-    def __init__(self, path: str | Path, max_bytes: int = 5_000_000):
+    def __init__(self, path: str | Path, max_bytes: int = 5_000_000,
+                 anchor: "TailAnchor | None" = None):
         from digital_twin.security.fsacl import ensure_private_dir
 
         self._path = Path(path)
         self._max_bytes = max(1024, int(max_bytes))
         self._lock = threading.Lock()
+        self._anchor = anchor  # DPAPI tail anchor (None = feature off)
         # Owner-only log directory: the audit trail is evidence, so a local
         # account must not be able to read (or later, rewrite) it.
         ensure_private_dir(self._path.parent)
@@ -229,6 +275,10 @@ class AuditLog:
                 # Advance only after a durable write, so a dropped entry does
                 # not leave the in-memory chain ahead of the file.
                 self._last_hash = hashlib.sha256(blob).hexdigest()
+                if self._anchor is not None:
+                    # Best-effort tail anchor (never raises) — closes the
+                    # tail-mutation / truncation gap the chain alone can't.
+                    self._anchor.update(self._last_hash)
             except OSError:
                 logger.exception("Audit write failed; entry dropped: %s", blob)
         return entry
@@ -256,19 +306,36 @@ class AuditLog:
         with self._lock:
             return verify_chain(self._path)
 
+    def verify_with_anchor(self) -> dict[str, Any] | None:
+        """Verify the chain *and* the tail against the anchor (if configured).
+
+        Falls back to a plain chain verify when no anchor is set.
+        """
+        with self._lock:
+            if self._anchor is None:
+                return verify_chain(self._path)
+            return verify_with_anchor(self._path, self._anchor.read())
+
     # ------------------------------------------------------------------
     def _verify_at_startup(self) -> None:
         try:
-            broken = verify_chain(self._path)
+            if self._anchor is not None:
+                broken = verify_with_anchor(self._path, self._anchor.read())
+            else:
+                broken = verify_chain(self._path)
         except Exception:  # verification must never stop the assistant
             logger.exception("Audit chain verification failed to run")
             return
-        if broken:
-            logger.warning(
-                "AUDIT CHAIN BROKEN at record %s in %s: %s — the audit log may "
-                "have been tampered with.",
-                broken["index"], broken["file"], broken["reason"],
-            )
+        if not broken:
+            return
+        if broken.get("anchor_missing"):
+            # Degrade to a warning: an install predating the anchor still starts.
+            logger.warning("Audit tail anchor: %s", broken["reason"])
+            return
+        logger.warning(
+            "AUDIT CHAIN BROKEN in %s: %s — the audit log may have been "
+            "tampered with.", self._path, broken["reason"],
+        )
 
     def _rollover_if_needed(self, incoming: int) -> None:
         try:
@@ -289,3 +356,20 @@ class AuditLog:
         # NOTE: self._last_hash is deliberately NOT reset — the first record of
         # the new file must chain to the last record of the rolled file.
         logger.info("Audit log rolled over to %s", rolled.name)
+
+
+def build_audit_log(security) -> AuditLog:
+    """Construct the production audit log from ``SecurityConfig``, with the
+    DPAPI tail anchor enabled on Windows.
+
+    The single wiring point shared by the kernel and the CLIs so they all write
+    the same chain and keep the same anchor current.
+    """
+    from digital_twin.security.dpapi import is_available
+    from digital_twin.security.tail_anchor import TailAnchor
+
+    anchor_file = str(getattr(security, "audit_anchor_file", "")).strip()
+    anchor = (TailAnchor(anchor_file)
+              if anchor_file and is_available() else None)
+    return AuditLog(security.audit_file,
+                    max_bytes=security.audit_max_bytes, anchor=anchor)
