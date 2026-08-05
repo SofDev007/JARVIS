@@ -324,6 +324,12 @@ display (headless-safe) and never affects event flow.
 ```bash
 pip install -r requirements.txt
 
+# Install the package itself (editable) so the console scripts land on PATH:
+#   digital-twin, digital-twin-setup, digital-twin-memory,
+#   digital-twin-secrets, digital-twin-audit, digital-twin-device
+# Without this the CLIs are reachable only as `python -m digital_twin.…`.
+pip install -e .
+
 # Full kernel with camera-based gesture perception:
 python main.py --context presentation
 

@@ -5,6 +5,8 @@ confirm-clamp exercised end to end for the first time."""
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -60,10 +62,39 @@ def test_resolve_within_rejects_symlink_escapes(tmp_path):
     outside.mkdir()
     (outside / "secret.txt").write_text("secret")
     link = root / "link"
-    os.symlink(outside, link)
+    try:
+        os.symlink(outside, link)
+    except OSError as exc:  # Windows: needs SeCreateSymbolicLinkPrivilege
+        pytest.skip(
+            "cannot create a symlink without SeCreateSymbolicLinkPrivilege "
+            f"(Developer Mode / elevation): {exc}"
+        )
     roots = resolve_roots([str(root)])
     with pytest.raises(ValueError, match="outside the allowed roots"):
         resolve_within(str(link / "secret.txt"), roots)
+
+
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="directory junctions are a Windows/NTFS feature")
+def test_resolve_within_rejects_directory_junction_escapes(tmp_path):
+    # Unlike a symlink, `mklink /J` needs no privilege, so this containment
+    # check runs unconditionally — and junctions are the more likely real-world
+    # escape vector on Windows for exactly that reason.
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret")
+    junction = root / "j"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"mklink /J failed: {result.stderr}"
+    assert junction.exists()
+    roots = resolve_roots([str(root)])
+    with pytest.raises(ValueError, match="outside the allowed roots"):
+        resolve_within(str(junction / "secret.txt"), roots)
 
 
 def test_empty_allow_list_refuses_with_guidance(tmp_path):

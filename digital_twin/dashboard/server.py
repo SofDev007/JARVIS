@@ -269,7 +269,11 @@ class DashboardServer:
                 self._send(code, json.dumps(obj).encode("utf-8"))
 
             def _authorized(self) -> bool:
-                return self.headers.get("X-Dashboard-Token") == outer._token
+                # Constant-time: a plain == leaks token bytes via response
+                # timing. Encode to bytes so a non-ASCII header can't raise.
+                provided = self.headers.get("X-Dashboard-Token") or ""
+                return _secrets.compare_digest(
+                    provided.encode("utf-8"), outer._token.encode("utf-8"))
 
             # -- GET ------------------------------------------------------
             def do_GET(self):

@@ -47,6 +47,8 @@ digital-twin = "main:main"
 digital-twin-setup = "digital_twin.setup_cli:main"
 digital-twin-memory = "digital_twin.memory.cli:main"
 digital-twin-secrets = "digital_twin.security.secrets_cli:main"
+digital-twin-audit = "digital_twin.security.audit_cli:main"
+digital-twin-device = "digital_twin.security.device_cli:main"
 
 [tool.setuptools]
 py-modules = ["main"]

@@ -286,6 +286,13 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(config.logging)
     logger.info("Digital Twin kernel starting (config: %s)", args.config)
 
+    # Harden the at-rest state directories (data/, logs/) and warn loudly if
+    # any broad principal can still read them — checked before a single secret
+    # is written, so a regenerated directory is caught in time. Never fatal.
+    from digital_twin.security.fsacl import secure_and_verify_state
+
+    secure_and_verify_state(config)
+
     bus = EventBus(
         max_queue_size=config.bus.max_queue_size,
         slow_handler_warn_ms=config.bus.slow_handler_warn_ms,

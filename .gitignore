@@ -15,6 +15,9 @@ dist/
 *.pem
 *.pfx
 *.enc
+*.crt
+*.cer
+*.dpapi
 secrets/
 data/
 
