@@ -33,6 +33,7 @@ import re
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from typing import Any, Callable
 
 from digital_twin.configuration.settings import LLMConfig
@@ -58,6 +59,7 @@ You are this assistant's reasoning engine. Never invent capabilities you \
 don't have.
 
 Current application context: {context}
+Current time: {time}
 
 You may trigger EXACTLY ONE of these intents when the user asks you to \
 do something, and no other: {intents}
@@ -269,15 +271,12 @@ class ChatReasoner(BaseModule):
         else:
             text = f"That didn't work out: {payload.get('detail', status)}"
         self._count("plan_replies")
-        self._publish(Event(
-            topic=Topics.CHAT_RESPONSE,
-            source=self.name,
-            payload={
-                "text": text,
-                "reasoning": "plan result",
-                "source_event": run["source_event"],
-            },
-        ))
+        # Plan results are system phrases — use Jarvis voice if pre-cached
+        # Create a minimal event with the source_event ID
+        source_event = Event(Topics.CHAT, self.name, {"text": ""})
+        source_event.event_id = run["source_event"]
+        self._respond(source_event, text, reasoning="plan result",
+                      spoken_source="system")
 
     def _on_chat(self, event: Event) -> None:
         if self.state is not ModuleState.RUNNING:
@@ -286,8 +285,10 @@ class ChatReasoner(BaseModule):
             self._queue.put_nowait(event)
         except queue.Full:
             self._count("dropped")
+            # Queue-full is a system phrase — use Jarvis voice if pre-cached
             self._respond(event, "I'm still working on your previous request — "
-                                 "give me a moment.", reasoning="queue full")
+                                 "give me a moment.", reasoning="queue full",
+                        spoken_source="system")
 
     # ------------------------------------------------------------------
     # Worker
@@ -301,9 +302,11 @@ class ChatReasoner(BaseModule):
                 self._process(item)
             except Exception:  # the reasoner must survive anything
                 logger.exception("Chat reasoning failed")
+                # System phrase — use Jarvis voice if pre-cached
                 self._respond(item, "Something went wrong while thinking about "
                                     "that; the details are in my logs.",
-                              reasoning="internal error")
+                              reasoning="internal error",
+                              spoken_source="system")
 
     def _process(self, event: Event) -> None:
         text = str(event.payload.get("text", "")).strip()
@@ -323,6 +326,7 @@ class ChatReasoner(BaseModule):
         system = _SYSTEM_TEMPLATE.format(
             persona=self._config.persona,
             context=self._context,
+            time=datetime.now().strftime("%A, %B %d, %Y %I:%M %p"),
             intents=", ".join(self._allowed) or "(none configured)",
             memories=memories,
             screen=self._screen_section(),
@@ -492,11 +496,13 @@ class ChatReasoner(BaseModule):
     def _respond(self, event: Event, text: str, reasoning: str = "",
                  intent_triggered: str | None = None,
                  plan_requested: str | None = None,
-                 remembered: str | None = None) -> None:
+                 remembered: str | None = None,
+                 spoken_source: str = "chat") -> None:
         payload: dict[str, Any] = {
             "text": text,
             "reasoning": reasoning,
             "source_event": event.event_id,
+            "spoken_source": spoken_source,
         }
         if intent_triggered:
             payload["intent_triggered"] = intent_triggered

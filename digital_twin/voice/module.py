@@ -200,13 +200,16 @@ class VoicePerceptionModule(BaseModule):
         text = event.payload.get("text")
         if not isinstance(text, str) or not text.strip():
             return
-        # Spoken output goes through the gates like everything else.
+        # Use the spoken_source from the event (set by the reasoner) to
+        # route to the correct TTS backend. System phrases get Jarvis
+        # pre-cache check; chat output goes straight to Piper.
+        spoken_source = event.payload.get("spoken_source", "chat")
         self._publish(Event(
             topic=Topics.ACTION_EXECUTE,
             source=self.name,
             payload={
                 "action": "speak",
-                "params": {"text": text.strip()},
+                "params": {"text": text.strip(), "source": spoken_source},
                 "label": "speak reply",
                 "source_event": event.event_id,
             },

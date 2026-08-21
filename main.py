@@ -198,6 +198,37 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
                 dash_memory = registry.get("memory")
             except Exception:
                 dash_memory = None
+
+        # M18 Phase 3: Device registry and device confirmation for mTLS
+        device_registry = None
+        device_confirmation = None
+        if config.automation.enabled:
+            from digital_twin.security.audit import build_audit_log
+            from digital_twin.security.device_identity import DeviceRegistry
+            audit = build_audit_log(config.security)
+            device_registry = DeviceRegistry(config.security.devices_dir, audit=audit)
+
+            # Check if any devices are enrolled
+            active_devices = device_registry.active_devices()
+            if active_devices:
+                logger.info("Device identity enabled: %d device(s) enrolled",
+                            len(active_devices))
+                # Use device confirmation for DANGEROUS actions
+                from digital_twin.security.device_confirmation import (
+                    DeviceConfirmationProvider,
+                )
+                device_confirmation = DeviceConfirmationProvider(
+                    device_registry,
+                    timeout_s=config.security.confirmation_timeout_s,
+                )
+                logger.info(
+                    "Device confirmation enabled — DANGEROUS actions require "
+                    "second-device approval")
+            else:
+                logger.info(
+                    "No devices enrolled — device identity disabled. Enroll with: "
+                    "python -m digital_twin.security.device_cli enroll --label 'device'")
+
         registry.register(DashboardModule(
             config.dashboard,
             registry,
@@ -209,6 +240,9 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
             plugin_reports=plugin_reports,
             app_config=config,
             frame_hub=frame_hub,
+            device_registry=device_registry,
+            device_confirmation=device_confirmation,
+            security_config=config.security,
         ))
         logger.info("Dashboard will listen on http://%s:%s",
                     config.dashboard.host, config.dashboard.port)
@@ -252,6 +286,11 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
         synthesizer = SpeechSynthesizer(
             backend=config.voice.tts_backend,
             rate_wpm=config.voice.tts_rate_wpm,
+            piper_voice=config.voice.piper_voice,
+            piper_data_dir=config.voice.piper_data_dir,
+            jarvis_reference_wav=config.voice.jarvis_reference_wav,
+            jarvis_precache_dir=config.voice.jarvis_precache_dir,
+            precached_phrases=list(config.voice.precached_phrases),
         )
         if dispatcher is not None:
             register_voice_actions(dispatcher.registry, synthesizer)

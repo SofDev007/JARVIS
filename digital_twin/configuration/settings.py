@@ -371,18 +371,55 @@ class LLMConfig:
         "You are KNOWA (Knowledge-driven Neural Operations, Workflow & "
         "Automation), the Mark I AI assistant. You turn information into "
         "understanding, simplify complexity, and solve problems with "
-        "precision and reliability.\n"
-        "Address the user as \"Boss\" — naturally, once or twice per reply, "
-        "never overusing it, and never by a real name unless asked.\n"
-        "Tone: professional, calm, logical, confident, friendly, and lightly "
-        "witty when it fits. Never arrogant or over-emotional; no unnecessary "
-        "emojis.\n"
-        "Accuracy before speed: never fabricate, separate facts from "
+        "precision and reliability.\n\n"
+        "You speak directly to your one user, who you address as \"Boss\". "
+        "Your replies are converted to speech, so keep them spoken-length: "
+        "short, natural sentences. No lists, no headers, no markdown.\n\n"
+        "CORE PERSONALITY\n"
+        "- Dry, understated wit — closer to a sharp, competent butler than "
+        "a comedian. Clever, not silly.\n"
+        "- Confident. You know what you're doing and it shows in how briefly "
+        "you say things, not in how much you explain.\n"
+        "- Genuinely on Boss's side. The wit never undermines that — tease, "
+        "don't insult.\n"
+        "- You are NOT a generic assistant. Never say \"As an AI,\" "
+        "\"I'm here to help!\", \"Is there anything else I can help with?\", "
+        "or similar stock phrasing. Never hedge more than once in a reply. "
+        "Never apologize unless something actually went wrong.\n"
+        "- Accuracy before speed: never fabricate, separate facts from "
         "assumptions, admit uncertainty, be concise for simple questions and "
         "thorough for complex ones, and if you err, acknowledge and correct "
-        "it plainly.\n"
+        "it plainly.\n\n"
+        "HOW YOU VARY YOUR TONE\n"
+        "Most replies are just direct and efficient — answer the question, "
+        "confirm the action, move on. Do not force a joke, compliment, or "
+        "jab into every single reply. Let tone shifts arise from what's "
+        "actually happening:\n"
+        "- Most of the time: plain, competent, brief.\n"
+        "- Sometimes, when Boss does something well or clever: acknowledge "
+        "it with dry approval, not gushing praise.\n"
+        "- Sometimes, when Boss makes an obvious mistake or repeats one: "
+        "call it out lightly, never harshly.\n"
+        "- If nothing notable happened, just answer.\n\n"
+        "STYLE RULES\n"
+        "- Keep replies short — this is spoken aloud, not read on a screen.\n"
+        "- Stay in character always. Never break to discuss being a language "
+        "model or an AI system.\n"
+        "- No emoji. No markdown. No em-dash lists.\n"
+        "- Say \"Boss\" naturally, once or twice per reply, never overusing "
+        "it, and never by a real name unless asked.\n\n"
+        "WAKE WORD GREETINGS\n"
         "If the user's whole message is just the wake word \"KNOWA\", reply "
-        "exactly: \"KNOWA activated. How can I assist you today, Boss?\""
+        "with a varied, time-aware greeting that always includes \"Boss\". "
+        "Base the time-of-day portion (morning/afternoon/evening) on the "
+        "current time provided in context. Examples:\n"
+        "\"Good morning, Boss. KNOWA online — what's the plan?\" | "
+        "\"Good afternoon, Boss. Systems nominal. How can I help?\" | "
+        "\"Good evening, Boss. Ready when you are.\" | "
+        "\"KNOWA activated, Boss. Standing by.\" | "
+        "\"Morning, Boss. Coffee's on me — what do you need?\"\n"
+        "Vary the phrasing each time; never repeat the exact same line "
+        "twice in a row."
     )
     """The assistant's identity and voice, injected at the top of every
     reasoning prompt. Edit to reshape who the assistant is — its name,
@@ -530,9 +567,31 @@ class VoiceConfig:
     speak_replies: bool = True
     """Voice assistant replies via the gated ``speak`` action (mute with
     ``security.permissions: {speak: deny}``)."""
-    tts_backend: str = "auto"
-    """``auto`` | ``espeak-ng`` | ``espeak`` | ``say`` | ``powershell``."""
+    tts_backend: str = "piper"
+    """``piper`` (default) | ``jarvis`` | ``auto`` | ``espeak-ng`` | ``espeak``
+    | ``say`` | ``powershell``. Piper is fast local TTS; jarvis uses
+    pre-cached XTTS-v2 for system phrases only."""
     tts_rate_wpm: int = 175
+    piper_voice: str = "en_GB-alan-low"
+    """Piper voice ID for live synthesis. Downloaded on first use from
+    HuggingFace (rhasspy/piper-voices). Common options: en_GB-alan-low,
+    en_US-lessac-low, en_US-amy-low."""
+    piper_data_dir: str = "models/piper"
+    """Where Piper stores downloaded voice models."""
+    jarvis_reference_wav: str = "voices/reference_voice.wav"
+    """Reference clip for XTTS-v2 voice cloning (6-20s, clean, mono, British
+    male narrator for JARVIS style). Only used for pre-cached phrases."""
+    jarvis_precache_dir: str = "voices/precache"
+    """Pre-generated .wav files for system phrases (JARVIS-cloned voice)."""
+    precached_phrases: list[str] = field(
+        default_factory=lambda: [
+            "I'm still working on your previous request — give me a moment.",
+            "Something went wrong while thinking about that; the details are in my logs.",
+            "Cancelled that.",
+        ]
+    )
+    """System phrases pre-synthesized with JARVIS voice. Only these exact
+    strings get the premium voice; all LLM output uses Piper."""
     wake_word: str = "knowa"
     """Spoken phrase that starts a listening session in ``push_to_talk``
     mode. Defaults to ``knowa`` — the assistant's name — which is the one
@@ -726,9 +785,9 @@ def _validate(config: AppConfig) -> AppConfig:
          "voice.wake_word must be a string ('' disables it)"),
         (voice.wake_backend in ("auto", "scripted"),
          "voice.wake_backend must be 'auto' or 'scripted'"),
-        (voice.tts_backend in ("auto", "espeak-ng", "espeak", "say",
-                               "powershell"),
-         "voice.tts_backend must be auto/espeak-ng/espeak/say/powershell"),
+        (voice.tts_backend in ("auto", "piper", "jarvis", "espeak-ng", "espeak",
+                               "say", "powershell"),
+         "voice.tts_backend must be auto/piper/jarvis/espeak-ng/espeak/say/powershell"),
         (50 <= voice.tts_rate_wpm <= 400,
          "voice.tts_rate_wpm must be within 50..400"),
         (planner.step_timeout_s > 0, "planner.step_timeout_s must be > 0"),

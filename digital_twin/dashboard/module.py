@@ -63,6 +63,9 @@ class DashboardModule(BaseModule):
         plugin_reports=None,   # list[LoadedPlugin] for the plugin panel
         app_config=None,       # AppConfig for the read-only settings panel
         frame_hub=None,        # FrameHub for /api/frames MJPEG streaming
+        device_registry=None,  # M18 Phase 3: DeviceRegistry for mTLS
+        device_confirmation=None,  # M18 Phase 3: DeviceConfirmationProvider
+        security_config=None,  # M18 Phase 3: SecurityConfig for devices_dir
     ):
         super().__init__()
         self._config = config
@@ -74,6 +77,9 @@ class DashboardModule(BaseModule):
         self._plugin_reports = plugin_reports or []
         self._app_config = app_config
         self._frame_hub = frame_hub
+        self._device_registry = device_registry
+        self._device_confirmation = device_confirmation
+        self._security_config = security_config
         self._events: deque[dict[str, Any]] = deque(
             maxlen=config.recent_events)
         self._events_lock = threading.Lock()
@@ -107,6 +113,12 @@ class DashboardModule(BaseModule):
         data_sources["plugins"] = self._plugins_view
         if self._app_config is not None:
             data_sources["settings"] = self._settings_view
+
+        # M18 Phase 3: Use device confirmation for DANGEROUS actions if available
+        confirmations = self._confirmations
+        if self._device_confirmation is not None:
+            confirmations = self._device_confirmation
+
         self._server = DashboardServer(
             self._config.host,
             self._config.port,
@@ -114,10 +126,12 @@ class DashboardModule(BaseModule):
             status_source=self._status,
             events_source=self._recent,
             chat_sink=self._chat,
-            confirmations=self._confirmations,
+            confirmations=confirmations,
             data_sources=data_sources,
             stream_source=self._since,
             frame_hub=self._frame_hub,
+            device_registry=self._device_registry,
+            device_confirmation=self._device_confirmation,
         )
         self._server.start()
 

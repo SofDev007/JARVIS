@@ -213,20 +213,23 @@ mutation of the *last* record on disk is not caught by the chain alone (no
 following `prev` contradicts it). A sealed-tail marker is future work; the
 Phase A ACL bounds the gap meanwhile.
 
-### 4.4 Unauthenticated camera stream ❌ → ⏳ M18 Phase 3
+### 4.4 Unauthenticated camera stream ✅ M18 Phase 3
 
 **Actor:** T1, later T5 · **Asset:** A6
 
-Dashboard GET and MJPEG endpoints require no token. Any local process can
-read the live camera feed while the dashboard runs.
+Dashboard GET and MJPEG endpoints required no token. Any local process could
+read the live camera feed while the dashboard ran.
 
 **Currently bounded by:** dashboard disabled by default; loopback bind.
 **Becomes serious at M22**, when `allow_remote` exposes it over the tailnet.
 
-**Control:** Phase 3 mTLS must cover *all* endpoints including reads and the
-MJPEG stream — not POST-only by analogy with the existing token.
+**Control (M18 Phase 3):** mTLS now covers *all* dashboard endpoints including
+reads and the MJPEG stream. Clients must present an enrolled device certificate
+to access any endpoint. The trust bundle is rebuilt from active devices at
+startup; revoked devices are excluded. Dashboard access now requires device
+enrolment (a deliberate act of trust) and revoked devices lose access immediately.
 
-### 4.5 Voice as an authorization channel ❌ **DESIGN CONSTRAINT**
+### 4.5 Voice as an authorization channel ✅ M18 Phase 3
 
 **Actor:** T1, T7 · **Asset:** A1
 
@@ -234,12 +237,17 @@ M19 introduces a cloned voice. If voice were ever wired to authorization,
 Knowa's own TTS output replayed at its own microphone would defeat it. The
 system would manufacture the exact attack that compromises it.
 
-**Standing constraint, not a bug to fix later:**
+**Standing constraint, enforced in Phase 3:**
 - Speaker verification identifies; it never authorizes.
 - Authorization is possession of an enrolled device.
 - DANGEROUS actions require confirmation on a *second* enrolled device.
 - Anti-loopback: fingerprint own TTS output, reject matching wake events
   within a short window.
+
+**Phase 3 enforcement:** The `DeviceConfirmationProvider` rejects self-approval
+— the device requesting a DANGEROUS action cannot approve it. A second enrolled
+device must respond. This prevents a compromised phone from unilaterally
+approving destructive actions.
 
 ### 4.6 Weak token comparison ✅ M18 Phase A
 
@@ -308,9 +316,9 @@ a reproducible environment and a machine-specific one.
 | B2 | Knowa ↔ plugins | Subprocess sandbox + manifest | 🟡 untested adversarially |
 | B3 | **Trusted input ↔ untrusted content** | **None** | ❌ **§4.1 — the critical gap** |
 | B4 | Host ↔ network | Loopback bind; Tailscale from M22 | 🟡 |
-| B5 | Desktop ↔ phone | mTLS + device certs | ⏳ M18 Phase 3 |
+| B5 | Desktop ↔ phone | mTLS + device certs | ✅ M18 Phase 3 |
 | B6 | Machine ↔ LLM provider | Privacy tiers | ⏳ M20 |
-| B7 | Identification ↔ authorization | Device possession, never voice | ⏳ M18 Phase 3 |
+| B7 | Identification ↔ authorization | Device possession, never voice | ✅ M18 Phase 3 |
 
 **B3 is the boundary that does not exist yet.** Every other row is a control
 being built or hardened. B3 has no design, no milestone, and no owner.
@@ -356,7 +364,7 @@ Revisit the whole document if any of these change:
 | **M18 Phase A** | Owner-only ACLs, startup verification, `compare_digest`, junction containment test | §4.2, §4.6, B1 |
 | **M18 Phase B** | Hash-chained audit log, cross-rollover chaining, `verify_chain()` | §4.3, A7 |
 | **M18 Phase 3** | Device-bound identity (DPAPI), mTLS on *all* endpoints, second-device confirm for DANGEROUS | §4.4, §4.5, B5, B7 |
-| **M19** | Voice identity — anti-loopback guard, verification-not-authorization | §4.5 |
+| **M19** | Voice identity — anti-loopback guard, verification-not-authorization | §4.5 (reinforcement) |
 | **M20** | Privacy tiers on memory and RAG; local-only routing | §4.8, B6 |
 | **M22** | Phone thin client, no secrets at rest, remote revoke | §4.9 |
 | **Unscheduled** | **Prompt-injection controls — provenance tagging, untrusted content cannot originate actions** | **§4.1, B3** |

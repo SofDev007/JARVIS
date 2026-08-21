@@ -264,9 +264,27 @@ class ActionDispatcher(BaseModule):
     def _confirm(self, event: Event, spec: ActionSpec, params: Mapping[str, Any]) -> bool:
         self._publish_confirmation(spec.name, "pending")
         try:
-            approved = self._confirmation.request(
-                spec.name, params, self._confirm_timeout
-            )
+            # M18 Phase 3: DANGEROUS actions require second-device confirmation
+            # when the device confirmation provider is configured.
+            # The regular confirmation provider handles SAFE/SENSITIVE.
+            if spec.risk.value == "dangerous" and hasattr(self._confirmation, 'request'):
+                # Check if this is a DeviceConfirmationProvider (has request with risk param)
+                import inspect
+                sig = inspect.signature(self._confirmation.request)
+                if 'risk' in sig.parameters:
+                    approved = self._confirmation.request(
+                        spec.name, params, self._confirm_timeout,
+                        requesting_device=getattr(self, '_current_device', None),
+                        risk=spec.risk.value,
+                    )
+                else:
+                    approved = self._confirmation.request(
+                        spec.name, params, self._confirm_timeout
+                    )
+            else:
+                approved = self._confirmation.request(
+                    spec.name, params, self._confirm_timeout
+                )
         except Exception:
             logger.exception("Confirmation provider failed; denying")
             approved = False

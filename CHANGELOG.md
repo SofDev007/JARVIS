@@ -106,6 +106,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com); versions follow S
 - `docs/THREAT_MODEL.md` §4.3 (audit-log integrity, asset A7) moved 🟡 → ✅.
   Threat-model updates now ship with each security milestone.
 
+### Phase 3 — mTLS dashboard & second-device confirmation
+
+#### Added
+- **mTLS on all dashboard endpoints** (`security/mtls_server.py`): every
+  endpoint — including GET and MJPEG stream — now requires a client
+  certificate from an enrolled device. This closes the camera-feed exposure
+  (§4.4): unauthenticated local processes can no longer read status or stream
+  the live camera.
+  - `create_mtls_context()` builds an `ssl.SSLContext` that loads the server's
+    self-signed cert/key and requires client certs verified against the trust
+    bundle of enrolled devices.
+  - `verify_client_cert()` checks the cert fingerprint against the registry
+    and rejects revoked devices.
+  - Server cert/key are generated on first use; the private key is
+    DPAPI-protected (same pattern as device keys).
+  - Trust bundle is rebuilt at startup from `active_cert_pems()`.
+- **Second-device confirmation for DANGEROUS actions**
+  (`security/device_confirmation.py`): a `DeviceConfirmationProvider` that
+  requires a *second* enrolled device to approve DANGEROUS actions. This
+  prevents a compromised phone from unilaterally approving destructive
+  actions.
+  - `request()` blocks until a different enrolled device approves, denies,
+    or timeout expires (fail-closed).
+  - `resolve()` accepts approval from any enrolled device except the one
+    that made the request (self-approval rejected).
+  - Revoked devices cannot approve.
+  - Non-enrolled devices cannot approve.
+- **Dashboard integration**: `DashboardModule` and `DashboardServer` now
+  accept `device_registry` and `device_confirmation` parameters. When devices
+  are enrolled, mTLS and device confirmation are enabled automatically.
+- **Kernel wiring** (`main.py`): device registry is created at startup when
+  dashboard is enabled; if devices are enrolled, device confirmation replaces
+  the web confirmation provider for DANGEROUS actions.
+- 6 new tests (`tests/test_mtls_device_confirmation.py`): mTLS context
+  creation with enrolled devices; device confirmation requires second device;
+  self-approval rejected; non-enrolled devices rejected; revoked devices
+  rejected; timeout denies.
+
+#### Threat model
+- `docs/THREAT_MODEL.md` §4.4 (unauthenticated camera stream, asset A6) moved
+  ❌ → ✅.
+- §4.5 (voice as authorization channel, asset A1) moved ❌ → ✅ — second-device
+  confirmation enforced in code.
+- Trust boundaries B5 (desktop ↔ phone) and B7 (identification ↔ authorization)
+  moved ⏳ → ✅.
+
 ### Debt / follow-ups (recorded, not done)
 - **Audit tail record.** The chain cannot detect mutation of the single last
   record on disk (no successor `prev` contradicts it); a sealed-tail marker is

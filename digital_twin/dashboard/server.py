@@ -4,6 +4,10 @@ Security posture, stated plainly:
 
 * **Binding**: ``127.0.0.1`` unless ``dashboard.allow_remote`` is set —
   and config validation refuses a non-loopback host without that flag.
+* **mTLS (M18 Phase 3)**: when device enrolment is enabled, every endpoint
+  requires a client certificate from an enrolled device. This closes the
+  camera-feed exposure (§4.4) — unauthenticated local processes can no longer
+  read status or the MJPEG stream.
 * **CSRF containment**: every state-changing endpoint requires the
   ``X-Dashboard-Token`` header. The token is random per server start and
   is embedded only in the served page — a malicious website open in the
@@ -241,16 +245,20 @@ class DashboardServer:
         status_source: Callable[[], dict[str, Any]],
         events_source: Callable[[], list[dict[str, Any]]],
         chat_sink: Callable[[str], None],
-        confirmations,  # WebConfirmation | None
+        confirmations,  # WebConfirmation | DeviceConfirmationProvider | None
         data_sources: "dict[str, Callable[[], Any]] | None" = None,
         stream_source: "Callable[[float], list[dict[str, Any]]] | None" = None,
         frame_hub=None,  # FrameHub | None — MJPEG at /api/frames/<name>
+        device_registry=None,  # M18 Phase 3: DeviceRegistry for mTLS
+        device_confirmation=None,  # M18 Phase 3: DeviceConfirmationProvider
     ):
         self._token = _secrets.token_hex(16)
         page = _PAGE.replace("__TOKEN__", self._token).replace(
             "__VERSION__", version)
         sources = dict(data_sources or {})  # name -> callable, GET /api/<name>
         outer = self
+        outer._device_registry = device_registry
+        outer._device_confirmation = device_confirmation
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):  # route into our logging
@@ -274,6 +282,22 @@ class DashboardServer:
                 provided = self.headers.get("X-Dashboard-Token") or ""
                 return _secrets.compare_digest(
                     provided.encode("utf-8"), outer._token.encode("utf-8"))
+
+            def _get_client_device(self) -> str | None:
+                """Get the device_id from the mTLS client cert, if available."""
+                # The client cert is available via self.connection.getpeercert()
+                # after the SSL handshake. This returns the device_id if enrolled.
+                if outer._device_registry is None:
+                    return None
+                try:
+                    # Get the client certificate from the SSL socket
+                    cert_der = self.connection.getpeercert(binary_form=True)
+                    if cert_der is None:
+                        return None
+                    from digital_twin.security.mtls_server import verify_client_cert
+                    return verify_client_cert(outer._device_registry, cert_der)
+                except (AttributeError, OSError):
+                    return None
 
             # -- GET ------------------------------------------------------
             def do_GET(self):
@@ -367,8 +391,20 @@ class DashboardServer:
                                          "web confirmations not enabled"})
                         return
                     confirmation_id = self.path.rsplit("/", 1)[-1]
-                    resolved = confirmations.resolve(
-                        confirmation_id, bool(body.get("approve")))
+                    approved = bool(body.get("approve"))
+
+                    # M18 Phase 3: Device confirmation requires second device
+                    if outer._device_confirmation is not None:
+                        responding_device = self._get_client_device()
+                        if responding_device is None:
+                            self._json(403, {"error":
+                                "device confirmation requires mTLS client cert"})
+                            return
+                        resolved = outer._device_confirmation.resolve(
+                            confirmation_id, approved, responding_device)
+                    else:
+                        resolved = confirmations.resolve(
+                            confirmation_id, approved)
                     self._json(200 if resolved else 404,
                                {"resolved": resolved})
                 elif self.path == "/api/chat":
