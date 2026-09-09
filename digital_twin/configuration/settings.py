@@ -592,9 +592,9 @@ class VoiceConfig:
     )
     """System phrases pre-synthesized with JARVIS voice. Only these exact
     strings get the premium voice; all LLM output uses Piper."""
-    wake_word: str = "knowa"
+    wake_word: str = "jarvis"
     """Spoken phrase that starts a listening session in ``push_to_talk``
-    mode. Defaults to ``knowa`` — the assistant's name — which is the one
+    mode. Defaults to ``jarvis`` — the assistant's name — which is the one
     place a more-exposing default is justified: a hands-free assistant is
     expected to answer to its name. NOTE: a non-empty wake word implies
     *continuous microphone capture* by the always-on detector. Set to ``''``
@@ -603,6 +603,8 @@ class VoiceConfig:
     word merely presses the push-to-talk button."""
     wake_backend: str = "auto"
     """``auto`` (reuse the STT transcriber) | ``scripted`` (tests)."""
+    wake_word_full_form: str = "Just a rather very intelligent system"
+    """Full expansion of the wake word acronym, used in greetings and help."""
 
 
 @dataclass(frozen=True)

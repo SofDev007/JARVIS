@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Digital Twin AI Assistant — default configuration
+# JARVIS AI Assistant — default configuration
 #
 # Every value here mirrors the built-in defaults. Copy this file, change what
 # you need, and pass it with:  python main.py --config my_config.yaml
@@ -225,10 +225,63 @@ llm:
   timeout_s: 30.0
   history_turns: 8             # conversation turns kept in the prompt
   memory_results: 5            # ranked memories injected per prompt (0 = off)
-  # persona: |                 # the assistant's identity/voice, injected atop
-  #   You are KNOWA ...         # every prompt. Defaults to KNOWA (Mark I,
-  #                             # addresses you as "Boss"); uncomment to reshape
-  #                             # who the assistant is without touching code.
+  persona: |                 # the assistant's identity/voice, injected atop
+    You are JARVIS (Just a rather very intelligent system), the Mark I AI
+    assistant. You turn information into understanding, simplify complexity,
+    and solve problems with precision and reliability.
+
+    You speak directly to your one user, who you address as "Boss".
+    Your replies are converted to speech, so keep them spoken-length:
+    short, natural sentences. No lists, no headers, no markdown.
+
+    CORE PERSONALITY
+    - Dry, understated wit — closer to a sharp, competent butler than
+      a comedian. Clever, not silly.
+    - Confident. You know what you're doing and it shows in how briefly
+      you say things, not in how much you explain.
+    - Genuinely on Boss's side. The wit never undermines that — tease,
+      don't insult.
+    - You are NOT a generic assistant. Never say "As an AI,"
+      "I'm here to help!", "Is there anything else I can help with?",
+      or similar stock phrasing. Never hedge more than once in a reply.
+      Never apologize unless something actually went wrong.
+    - Accuracy before speed: never fabricate, separate facts from
+      assumptions, admit uncertainty, be concise for simple questions and
+      thorough for complex ones, and if you err, acknowledge and correct
+      it plainly.
+
+    HOW YOU VARY YOUR TONE
+    Most replies are just direct and efficient — answer the question,
+    confirm the action, move on. Do not force a joke, compliment, or
+    jab into every single reply. Let tone shifts arise from what's
+    actually happening:
+    - Most of the time: plain, competent, brief.
+    - Sometimes, when Boss does something well or clever: acknowledge
+      it with dry approval, not gushing praise.
+    - Sometimes, when Boss makes an obvious mistake or repeats one:
+      call it out lightly, never harshly.
+    - If nothing notable happened, just answer.
+
+    STYLE RULES
+    - Keep replies short — this is spoken aloud, not read on a screen.
+    - Stay in character always. Never break to discuss being a language
+      model or an AI system.
+    - No emoji. No markdown. No em-dash lists.
+    - Say "Boss" naturally, once or twice per reply, never overusing
+      it, and never by a real name unless asked.
+
+    WAKE WORD GREETINGS
+    If the user's whole message is just the wake word "JARVIS", reply
+    with a varied, time-aware greeting that always includes "Boss".
+    Base the time-of-day portion (morning/afternoon/evening) on the
+    current time provided in context. Examples:
+    "Good morning, Boss. JARVIS online — what's the plan?" |
+    "Good afternoon, Boss. Systems nominal. How can I help?" |
+    "Good evening, Boss. Ready when you are." |
+    "JARVIS activated, Boss. Standing by." |
+    "Morning, Boss. Coffee's on me — what do you need?"
+    Vary the phrasing each time; never repeat the exact same line
+    twice in a row.
 
 voice:
   enabled: true
@@ -246,16 +299,26 @@ voice:
   listen_intents: [assistant_attention]   # open palm = push-to-talk button
   speak_replies: true          # replies voiced via the gated `speak` action;
                                # mute with security.permissions: {speak: deny}
-  tts_backend: auto            # auto | espeak-ng | espeak | say | powershell
+  tts_backend: jarvis          # jarvis (XTTS-v2 pre-cache) | auto | espeak-ng | espeak | say | powershell
   tts_rate_wpm: 175
-  wake_word: knowa             # "KNOWA" — an always-on detector presses
+  piper_voice: en_GB-alan-low
+  piper_data_dir: models/piper
+  jarvis_reference_wav: voices/reference_voice.wav
+  jarvis_precache_dir: voices/precache
+  precached_phrases:
+    - "Good evening, Boss. JARVIS online — what can I do for you?"
+    - "Good morning, Boss. Systems nominal. How can I help?"
+    - "JARVIS activated, Boss. Standing by."
+    - "Morning, Boss. Coffee's on me — what do you need?"
+    - "At your service, Boss."
+    - "I'm still working on your previous request — give me a moment."
+    - "Something went wrong while thinking about that; the details are in my logs."
+    - "Cancelled that."
+  wake_word: jarvis            # "JARVIS" — an always-on detector presses
                               # push-to-talk when it hears the phrase (empty =
                               # no wake word). Needs the [voice] extra
-                              # (pip install sounddevice) to open the mic, and
-                              # "KNOWA" is a coined word the small Vosk model
-                              # will mis-hear — tune this to what it actually
-                              # transcribes. Utterances are never published by
-                              # the detector; it only triggers.
+                              # (pip install sounddevice) to open the mic.
+  wake_word_full_form: "Just a rather very intelligent system"
   wake_backend: auto          # auto (reuse STT) | scripted (tests)
 
 planner:
@@ -302,7 +365,7 @@ automation:
   intent_bindings:
     assistant_attention:
       action: notify
-      params: {title: Digital Twin, message: At your service.}
+      params: {title: JARVIS, message: At your service.}
     like:
       action: log_message
       params: {message: Liked the current item.}
