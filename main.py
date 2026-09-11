@@ -300,7 +300,7 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
         if config.voice.wake_word.strip():
             from digital_twin.voice.wake import WakeWordModule
 
-            registry.register(WakeWordModule(config.voice))
+            registry.register(WakeWordModule(config.voice, synthesizer=synthesizer))
             logger.info("Wake word enabled: %r", config.voice.wake_word)
     if with_gesture:
         # Imported here so the kernel starts even without cv2/mediapipe.

@@ -18,6 +18,7 @@ from digital_twin.core.registry import ModuleRegistry
 from digital_twin.plugins.loader import load_plugins
 from digital_twin.security.permissions import RiskLevel
 from digital_twin.voice.audio import AudioSource
+from digital_twin.voice.synthesis import FakeSynthesizer
 from digital_twin.voice.transcriber import ScriptedTranscriber, TranscriptChunk
 from digital_twin.voice.wake import WakeWordModule, _normalise
 
@@ -209,6 +210,101 @@ def test_wake_word_never_publishes_utterances(bus):
     finally:
         module.stop()
     assert utterances == []  # only the voice module publishes utterances
+
+
+# ---------------------------------------------------------------------------
+# Wake word anti-loopback guard (M19)
+# ---------------------------------------------------------------------------
+def test_wake_word_suppressed_while_synthesizer_speaking(bus):
+    synth = FakeSynthesizer()
+    synth.speak("Good evening, Boss.", source="system")  # sets speaking=True
+    transcriber = ScriptedTranscriber([
+        TranscriptChunk(text="hey twin", final=True),
+    ])
+    module = WakeWordModule(
+        VoiceConfig(wake_word="hey twin"),
+        audio_source=_ScriptedAudio(chunks=2),
+        transcriber=transcriber,
+        synthesizer=synth,
+    )
+    triggers = []
+    bus.subscribe(Topics.VOICE_CONTROL, triggers.append)
+    module.start(bus)
+    try:
+        time.sleep(0.5)
+    finally:
+        module.stop()
+    assert triggers == []  # own TTS speaking → wake match suppressed
+
+
+def test_wake_word_suppressed_within_tail_window_after_speech(bus):
+    synth = FakeSynthesizer()
+    synth.speak("Good evening, Boss.", source="system")
+    synth.stop()  # "just finished" — _fake_ended_at set to now
+    transcriber = ScriptedTranscriber([
+        TranscriptChunk(text="hey twin", final=True),
+    ])
+    module = WakeWordModule(
+        VoiceConfig(wake_word="hey twin", wake_loopback_guard_s=5.0),
+        audio_source=_ScriptedAudio(chunks=2),
+        transcriber=transcriber,
+        synthesizer=synth,
+    )
+    triggers = []
+    bus.subscribe(Topics.VOICE_CONTROL, triggers.append)
+    module.start(bus)
+    try:
+        time.sleep(0.5)
+    finally:
+        module.stop()
+    assert triggers == []  # still inside the 5s suppression tail
+
+
+def test_wake_word_triggers_after_tail_window_elapses(bus):
+    synth = FakeSynthesizer()
+    synth.speak("Good evening, Boss.", source="system")
+    synth.stop()
+    synth._fake_ended_at -= 10  # simulate playback having ended 10s ago
+    transcriber = ScriptedTranscriber([
+        TranscriptChunk(text="hey twin", final=True),
+    ])
+    module = WakeWordModule(
+        VoiceConfig(wake_word="hey twin", wake_loopback_guard_s=0.4),
+        audio_source=_ScriptedAudio(chunks=2),
+        transcriber=transcriber,
+        synthesizer=synth,
+    )
+    triggers = []
+    bus.subscribe(Topics.VOICE_CONTROL, triggers.append)
+    module.start(bus)
+    try:
+        deadline = time.time() + 3
+        while not triggers and time.time() < deadline:
+            time.sleep(0.02)
+    finally:
+        module.stop()
+    assert triggers, "wake word should fire once outside the guard window"
+
+
+def test_wake_word_triggers_normally_with_no_synthesizer(bus):
+    transcriber = ScriptedTranscriber([
+        TranscriptChunk(text="hey twin", final=True),
+    ])
+    module = WakeWordModule(
+        VoiceConfig(wake_word="hey twin"),
+        audio_source=_ScriptedAudio(chunks=2),
+        transcriber=transcriber,
+    )
+    triggers = []
+    bus.subscribe(Topics.VOICE_CONTROL, triggers.append)
+    module.start(bus)
+    try:
+        deadline = time.time() + 3
+        while not triggers and time.time() < deadline:
+            time.sleep(0.02)
+    finally:
+        module.stop()
+    assert triggers, "no synthesizer wired → guard is a no-op, same as before"
 
 
 # ---------------------------------------------------------------------------

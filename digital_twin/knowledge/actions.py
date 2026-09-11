@@ -25,10 +25,18 @@ from digital_twin.automation.registry import ActionRegistry, ActionSpec
 from digital_twin.configuration.settings import FilesConfig, KnowledgeConfig
 from digital_twin.knowledge.store import KnowledgeStore
 from digital_twin.security.permissions import RiskLevel
+from digital_twin.security.privacy import PrivacyTier
 
 logger = logging.getLogger(__name__)
 
 _MAX_INGEST_CHARS = 200_000
+_PRIVACY_TIERS = {tier.value for tier in PrivacyTier}
+
+
+def _validate_privacy_tier(params: Mapping[str, Any]) -> None:
+    tier = params.get("privacy_tier")
+    if tier is not None and tier not in _PRIVACY_TIERS:
+        raise ValueError(f"privacy_tier must be one of {_PRIVACY_TIERS}, got {tier!r}")
 
 
 def register_knowledge_actions(
@@ -42,6 +50,7 @@ def register_knowledge_actions(
     # -- ingest_document (SENSITIVE) -----------------------------------------
     def validate_ingest_document(params: Mapping[str, Any]) -> None:
         resolve_within(params.get("path"), roots)
+        _validate_privacy_tier(params)
 
     def handle_ingest_document(params: Mapping[str, Any]) -> str:
         path = resolve_within(params.get("path"), roots)
@@ -62,7 +71,8 @@ def register_knowledge_actions(
             text = text[:_MAX_INGEST_CHARS]
         doc_id, chunks, created = store.ingest(
             title=path.name, text=text, source=str(path),
-            replace_source=True)
+            replace_source=True,
+            privacy_tier=params.get("privacy_tier", "local_only"))
         state = "ingested" if created else "already known (unchanged)"
         return f"{state}: '{path.name}' as document {doc_id} ({chunks} chunks)"
 
@@ -82,11 +92,13 @@ def register_knowledge_actions(
             raise ValueError("a non-empty 'text' string is required")
         if len(text) > _MAX_INGEST_CHARS:
             raise ValueError(f"'text' exceeds {_MAX_INGEST_CHARS} characters")
+        _validate_privacy_tier(params)
 
     def handle_ingest_text(params: Mapping[str, Any]) -> str:
         title = str(params.get("title", "note"))
         doc_id, chunks, created = store.ingest(
-            title=title, text=str(params["text"]), source="chat")
+            title=title, text=str(params["text"]), source="chat",
+            privacy_tier=params.get("privacy_tier", "local_only"))
         state = "ingested" if created else "already known (unchanged)"
         return f"{state}: '{title}' as document {doc_id} ({chunks} chunks)"
 

@@ -200,7 +200,8 @@ class ActionDispatcher(BaseModule):
                      "params": dict(params), "risk": spec.risk.value},
         ))
 
-        decision = self._policy.evaluate(spec.name, spec.risk)
+        decision = self._policy.evaluate(
+            spec.name, spec.risk, tainted=bool(event.payload.get("tainted", False)))
         if decision is Decision.DENY:
             self._finish(event, action=spec.name, status="denied",
                          detail="permission policy", params=params)
@@ -241,7 +242,8 @@ class ActionDispatcher(BaseModule):
                      **self._plan_fields(event)},
         ))
 
-        decision = self._policy.evaluate(spec.name, spec.risk)
+        decision = self._policy.evaluate(
+            spec.name, spec.risk, tainted=bool(event.payload.get("tainted", False)))
         if decision is Decision.DENY:
             self._finish(event, action=spec.name, status="denied",
                          detail="permission policy", params=params)
@@ -263,6 +265,7 @@ class ActionDispatcher(BaseModule):
     # ------------------------------------------------------------------
     def _confirm(self, event: Event, spec: ActionSpec, params: Mapping[str, Any]) -> bool:
         self._publish_confirmation(spec.name, "pending")
+        tainted = bool(event.payload.get("tainted", False))
         try:
             # M18 Phase 3: DANGEROUS actions require second-device confirmation
             # when the device confirmation provider is configured.
@@ -283,7 +286,7 @@ class ActionDispatcher(BaseModule):
                     )
             else:
                 approved = self._confirmation.request(
-                    spec.name, params, self._confirm_timeout
+                    spec.name, params, self._confirm_timeout, tainted=tainted
                 )
         except Exception:
             logger.exception("Confirmation provider failed; denying")

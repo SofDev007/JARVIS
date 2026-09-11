@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -40,9 +41,9 @@ class SpeechSynthesizer:
     def __init__(
         self,
         backend: str = "auto",
-        rate_wpm: int = 175,
+        rate_wpm: int = 180,
         *,
-        piper_voice: str = "en_GB-alan-low",
+        piper_voice: str = "en_GB-alan-medium",
         piper_data_dir: str = "models/piper",
         jarvis_reference_wav: str = "voices/reference_voice.wav",
         jarvis_precache_dir: str = "voices/precache",
@@ -54,6 +55,14 @@ class SpeechSynthesizer:
         self._lock = threading.Lock()
         self.utterances = 0
         self.interruptions = 0
+        # Playback interval, tracked across every backend (not just the
+        # subprocess ones `speaking` reflects) so a wake-word loopback guard
+        # can tell "still playing" from "finished a moment ago". Read/written
+        # without `_lock` on purpose: `speak()` holds `_lock` for the full
+        # blocking duration of Piper/Jarvis playback, so a lock-guarded read
+        # here would just block until playback ends instead of observing it.
+        self._speak_started: float | None = None
+        self._speak_ended: float | None = None
 
         # Piper config
         self._piper_voice = piper_voice
@@ -131,6 +140,8 @@ class SpeechSynthesizer:
         """
         with self._lock:
             self._terminate_locked()
+            self._speak_started = time.monotonic()
+            self._speak_ended = None
             try:
                 if self._backend == "piper":
                     result = self._speak_piper(text)
@@ -146,6 +157,9 @@ class SpeechSynthesizer:
                 raise
             except Exception as exc:
                 raise SynthesisError(f"TTS failed: {exc}") from exc
+            finally:
+                self._speak_started = None
+                self._speak_ended = time.monotonic()
 
     def _speak_piper(self, text: str) -> str:
         """Synthesize with Piper TTS (fast, local, CPU-friendly)."""
@@ -169,21 +183,49 @@ class SpeechSynthesizer:
             logger.info("Loading Piper voice: %s", voice_path)
             self._piper = PiperVoice.load(str(voice_path))
 
-        # Generate audio in memory and play
+        # Generate audio in memory and play. piper-tts >=1.8 synthesizes
+        # straight into an open wave.Wave_write (no more synthesize_stream_raw).
         import io
         import wave
 
-        # Piper returns int16 PCM; wrap in WAV for playback
-        audio_bytes = b""
-        for audio_chunk in self._piper.synthesize_stream_raw(text):
-            audio_bytes += audio_chunk
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            self._piper.synthesize_wav(text, wav_file, syn_config=self._piper_syn_config())
+        wav_data = wav_buffer.getvalue()
 
-        if not audio_bytes:
+        if len(wav_data) <= 44:  # empty audio: just the WAV header
             return f"piper: synthesized 0 bytes for {len(text)} chars"
 
-        # Play via platform method
-        self._play_pcm(audio_bytes, sample_rate=self._piper.config.sample_rate)
+        self._play_wav_bytes(wav_data)
         return f"piper: {len(text)} chars via {self._piper_voice}"
+
+    # Piper's own defaults are flat/metronomic by design (fast, predictable
+    # CPU synthesis); nudging these up trades a little of that predictability
+    # for natural-sounding variance. Values beyond this range start sounding
+    # slurred (noise) or rushed/sluggish (length), which reads as *more*
+    # artificial, not less.
+    _NOISE_SCALE = 0.75      # per-phoneme acoustic variance (was Piper default ~0.667)
+    _NOISE_W_SCALE = 0.9     # timing/rhythm variance (was Piper default ~0.8)
+    _LENGTH_SCALE_MIN = 0.85
+    _LENGTH_SCALE_MAX = 1.15
+
+    def _piper_syn_config(self):
+        """Map ``tts_rate_wpm`` onto Piper's ``length_scale`` (playback
+        duration; pitch/tone is untouched, so speed changes don't distort
+        the voice), clamped to a subtle range — large deviations sound
+        rushed or sluggish rather than more natural. 175 wpm is Piper's own
+        neutral pace → scale 1.0. ``noise_scale``/``noise_w_scale`` add
+        natural variance Piper's defaults lack, which is most of what reads
+        as "robotic" at the default settings."""
+        from piper.config import SynthesisConfig
+
+        length_scale = max(self._LENGTH_SCALE_MIN,
+                            min(self._LENGTH_SCALE_MAX, 175.0 / max(self._rate, 1)))
+        return SynthesisConfig(
+            length_scale=length_scale,
+            noise_scale=self._NOISE_SCALE,
+            noise_w_scale=self._NOISE_W_SCALE,
+        )
 
     def _download_piper_voice(self) -> Path:
         """Download Piper voice from HuggingFace."""
@@ -193,19 +235,20 @@ class SpeechSynthesizer:
 
         # Construct HuggingFace URL
         # Format: https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alan/low/en_GB-alan-low.onnx
+        # Voice names are "{lang}_{REGION}-{name}-{quality}", e.g. "en_GB-alan-low".
         parts = self._piper_voice.split("-")
         if len(parts) >= 3:
-            lang = parts[0]  # e.g., "en"
-            region = parts[1]  # e.g., "GB"
-            name = parts[2]  # e.g., "alan"
-            quality = parts[3] if len(parts) > 3 else "low"
+            lang_region = parts[0]  # e.g., "en_GB"
+            lang = lang_region.split("_")[0]  # e.g., "en"
+            name = parts[1]  # e.g., "alan"
+            quality = parts[2] if len(parts) > 2 else "low"
         else:
             # Fallback to default structure
-            lang, region, name, quality = "en", "GB", "alan", "low"
+            lang, lang_region, name, quality = "en", "en_GB", "alan", "low"
 
         base_url = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
-        onnx_url = f"{base_url}/{lang}/{region}/{name}/{quality}/{self._piper_voice}.onnx"
-        json_url = f"{base_url}/{lang}/{region}/{name}/{quality}/{self._piper_voice}.onnx.json"
+        onnx_url = f"{base_url}/{lang}/{lang_region}/{name}/{quality}/{self._piper_voice}.onnx"
+        json_url = f"{base_url}/{lang}/{lang_region}/{name}/{quality}/{self._piper_voice}.onnx.json"
 
         onnx_path = self._piper_data_dir / f"{self._piper_voice}.onnx"
         json_path = self._piper_data_dir / f"{self._piper_voice}.onnx.json"
@@ -279,8 +322,10 @@ class SpeechSynthesizer:
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(audio_bytes)
 
-        wav_data = wav_buffer.getvalue()
+        self._play_wav_bytes(wav_buffer.getvalue())
 
+    def _play_wav_bytes(self, wav_data: bytes) -> None:
+        """Play a complete in-memory WAV file using platform tools."""
         # Play via platform method
         if sys.platform == "win32":
             # Windows: write temp file and play with winsound
@@ -313,6 +358,17 @@ class SpeechSynthesizer:
         with self._lock:
             return self._process is not None and self._process.poll() is None
 
+    def is_speaking_or_recent(self, tail_s: float) -> bool:
+        """``True`` if playback is in progress, or finished within ``tail_s``
+        seconds — the signal a wake-word loopback guard suppresses on.
+        Covers the blocking Piper/Jarvis path (``_speak_started``/``_speak_ended``)
+        and the async subprocess path (``speaking``, since a subprocess
+        backend's own player keeps running after ``speak()`` returns)."""
+        if self._speak_started is not None or self.speaking:
+            return True
+        ended = self._speak_ended
+        return ended is not None and (time.monotonic() - ended) < tail_s
+
     def stop(self) -> bool:
         """Interrupt the current utterance; ``True`` if one was playing."""
         with self._lock:
@@ -339,11 +395,13 @@ class FakeSynthesizer(SpeechSynthesizer):
         super().__init__(backend="fake")
         self.spoken: list[str] = []
         self._fake_speaking = False
+        self._fake_ended_at: float | None = None
 
     def speak(self, text: str, source: Literal["system", "chat"] = "chat") -> str:
         self.spoken.append(text)
         self.utterances += 1
         self._fake_speaking = True
+        self._fake_ended_at = None
         return f"speaking {len(text)} characters via fake"
 
     @property
@@ -355,4 +413,11 @@ class FakeSynthesizer(SpeechSynthesizer):
         self._fake_speaking = False
         if was_speaking:
             self.interruptions += 1
+            self._fake_ended_at = time.monotonic()
         return was_speaking
+
+    def is_speaking_or_recent(self, tail_s: float) -> bool:
+        if self._fake_speaking:
+            return True
+        ended = self._fake_ended_at
+        return ended is not None and (time.monotonic() - ended) < tail_s

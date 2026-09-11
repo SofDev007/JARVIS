@@ -177,11 +177,99 @@ def test_unknown_intent_from_model_is_dropped(bus):
         reasoner.stop()
 
 
+def test_local_only_memory_omitted_from_cloud_prompt_included_for_ollama(bus, tmp_path):
+    memory = MemoryModule(MemoryConfig(db_path=str(tmp_path / "m.db")))
+    memory.start(bus)
+    memory.remember_fact("Boss's salary negotiation notes")  # default: local_only
+    try:
+        cloud_model = ScriptedModel([_decision(reply="ok")])
+        cloud = _reasoner(bus, cloud_model,
+                          config=LLMConfig(provider="gemini", memory_results=3),
+                          memory=memory)
+        try:
+            bus.publish(Event(Topics.CHAT, "chat", {"text": "salary negotiation"}))
+            assert _wait(lambda: cloud_model.calls)
+            assert "salary negotiation notes" not in cloud_model.calls[0]["system"]
+        finally:
+            cloud.stop()
+
+        local_model = ScriptedModel([_decision(reply="ok")])
+        local = _reasoner(bus, local_model,
+                          config=LLMConfig(provider="ollama", memory_results=3),
+                          memory=memory)
+        try:
+            bus.publish(Event(Topics.CHAT, "chat", {"text": "salary negotiation"}))
+            assert _wait(lambda: local_model.calls)
+            assert "salary negotiation notes" in local_model.calls[0]["system"]
+        finally:
+            local.stop()
+    finally:
+        memory.stop()
+
+
+def test_cloud_ok_memory_included_in_cloud_prompt(bus, tmp_path):
+    memory = MemoryModule(MemoryConfig(db_path=str(tmp_path / "m.db")))
+    memory.start(bus)
+    memory.remember_fact("Boss likes the color blue", privacy_tier="cloud_ok")
+    try:
+        model = ScriptedModel([_decision(reply="ok")])
+        reasoner = _reasoner(bus, model,
+                             config=LLMConfig(provider="gemini", memory_results=3),
+                             memory=memory)
+        try:
+            bus.publish(Event(Topics.CHAT, "chat", {"text": "what color"}))
+            assert _wait(lambda: model.calls)
+            assert "likes the color blue" in model.calls[0]["system"]
+        finally:
+            reasoner.stop()
+    finally:
+        memory.stop()
+
+
+def test_screen_text_omitted_from_cloud_prompt_by_default(bus):
+    model = ScriptedModel([_decision(reply="ok")])
+    reasoner = _reasoner(bus, model, config=LLMConfig(provider="gemini"))
+    try:
+        bus.publish(Event(Topics.SCREEN, "screen",
+                          {"text": "very secret screen contents"}))
+        bus.flush()
+        bus.publish(Event(Topics.CHAT, "chat", {"text": "hi"}))
+        assert _wait(lambda: model.calls)
+        assert "secret screen contents" not in model.calls[0]["system"]
+    finally:
+        reasoner.stop()
+
+
+def test_screen_text_included_for_ollama_or_when_opted_in(bus):
+    local_model = ScriptedModel([_decision(reply="ok")])
+    local = _reasoner(bus, local_model, config=LLMConfig(provider="ollama"))
+    try:
+        bus.publish(Event(Topics.SCREEN, "screen", {"text": "local screen text"}))
+        bus.flush()
+        bus.publish(Event(Topics.CHAT, "chat", {"text": "hi"}))
+        assert _wait(lambda: local_model.calls)
+        assert "local screen text" in local_model.calls[0]["system"]
+    finally:
+        local.stop()
+
+    opted_model = ScriptedModel([_decision(reply="ok")])
+    opted = _reasoner(bus, opted_model,
+                      config=LLMConfig(provider="gemini", screen_cloud_ok=True))
+    try:
+        bus.publish(Event(Topics.SCREEN, "screen", {"text": "opted-in screen text"}))
+        bus.flush()
+        bus.publish(Event(Topics.CHAT, "chat", {"text": "hi"}))
+        assert _wait(lambda: opted_model.calls)
+        assert "opted-in screen text" in opted_model.calls[0]["system"]
+    finally:
+        opted.stop()
+
+
 def test_memory_recall_enters_prompt_and_facts_persist(bus, tmp_path):
     memory = MemoryModule(MemoryConfig(db_path=str(tmp_path / "m.db")))
     memory.start(bus)
     memory.remember_fact("Boss uses IntelliJ for Java work",
-                         tags=("preference",))
+                         tags=("preference",), privacy_tier="cloud_ok")
     model = ScriptedModel([_decision(
         reply="Noted", remember="Boss prefers window seat flights")])
     reasoner = _reasoner(bus, model, memory=memory)
@@ -303,6 +391,88 @@ def test_chat_request_executes_action_through_all_gates(bus, tmp_path):
         assert payload["perception_event"]
         audit = AuditLog(tmp_path / "audit.jsonl").tail()
         assert any(entry["status"] == "completed" for entry in audit)
+    finally:
+        reasoner.stop()
+        chat.stop()
+        dispatcher.stop()
+
+
+def test_tainted_safe_action_requires_confirmation_not_auto_allow(bus, tmp_path):
+    """THREAT_MODEL.md §4.1: a SAFE action normally auto-executes; with
+    untrusted content (screen OCR) present this turn, it must not run
+    without confirmation."""
+    executed = []
+    registry = ActionRegistry()
+    registry.register(ActionSpec(
+        name="advance", description="t", risk=RiskLevel.SAFE,
+        handler=lambda p: executed.append("advance") or "done"))
+    confirmation = ScriptedConfirmation([True])
+    dispatcher = ActionDispatcher(
+        config=AutomationConfig(intent_bindings={
+            "next_slide": {"action": "advance"}}),
+        registry=registry,
+        policy=PermissionPolicy(risk_defaults={"safe": "allow"}),
+        confirmation=confirmation,
+        audit=AuditLog(tmp_path / "audit.jsonl"),
+    )
+    dispatcher.start(bus)
+
+    chat = ChatPerceptionModule(ChatConfig(console=False))
+    chat.start(bus)
+    model = ScriptedModel([_decision(reply="On it", intent="next_slide")])
+    reasoner = _reasoner(bus, model, allowed=("next_slide",),
+                         config=LLMConfig(provider="ollama"))
+
+    results = _record(bus, Topics.ACTION_RESULT)
+    try:
+        bus.publish(Event(Topics.SCREEN, "screen", {"text": "some screen content"}))
+        bus.flush()
+        chat.submit("go to the next slide please")
+        assert _wait(lambda: results)
+        assert "<untrusted source=\"screen\">" in model.calls[0]["system"]
+        assert executed == ["advance"]  # ran, but only after confirmation
+        assert confirmation.requests  # confirmation WAS consulted, not auto-allowed
+        assert confirmation.tainted_flags[0] is True
+    finally:
+        reasoner.stop()
+        chat.stop()
+        dispatcher.stop()
+
+
+def test_tainted_dangerous_action_refused_without_confirmation(bus, tmp_path):
+    """The confirmation provider is never even consulted — DANGEROUS +
+    tainted is refused outright, not confirmed (THREAT_MODEL.md §4.1)."""
+    executed = []
+    registry = ActionRegistry()
+    registry.register(ActionSpec(
+        name="wipe", description="t", risk=RiskLevel.DANGEROUS,
+        handler=lambda p: executed.append("wipe") or "done"))
+    confirmation = ScriptedConfirmation([True])  # queued approval must go unused
+    dispatcher = ActionDispatcher(
+        config=AutomationConfig(intent_bindings={
+            "destroy": {"action": "wipe"}}),
+        registry=registry,
+        policy=PermissionPolicy(risk_defaults={"dangerous": "confirm"}),
+        confirmation=confirmation,
+        audit=AuditLog(tmp_path / "audit.jsonl"),
+    )
+    dispatcher.start(bus)
+
+    chat = ChatPerceptionModule(ChatConfig(console=False))
+    chat.start(bus)
+    model = ScriptedModel([_decision(reply="On it", intent="destroy")])
+    reasoner = _reasoner(bus, model, allowed=("destroy",),
+                         config=LLMConfig(provider="ollama"))
+
+    results = _record(bus, Topics.ACTION_RESULT)
+    try:
+        bus.publish(Event(Topics.SCREEN, "screen", {"text": "some screen content"}))
+        bus.flush()
+        chat.submit("destroy everything")
+        assert _wait(lambda: results)
+        assert executed == []
+        assert results[0].payload["status"] == "denied"
+        assert confirmation.requests == []  # never even consulted
     finally:
         reasoner.stop()
         chat.stop()

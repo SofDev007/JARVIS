@@ -53,7 +53,8 @@ class WakeWordModule(BaseModule):
 
     def __init__(self, config: VoiceConfig,
                  audio_source: AudioSource | None = None,
-                 transcriber: Transcriber | None = None):
+                 transcriber: Transcriber | None = None,
+                 synthesizer=None):
         super().__init__()
         self._config = config
         self._phrase = _normalise(config.wake_word)
@@ -61,9 +62,11 @@ class WakeWordModule(BaseModule):
             raise ValueError("WakeWordModule requires a non-empty wake_word")
         self._audio = audio_source
         self._transcriber = transcriber
+        self._synthesizer = synthesizer
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._detections = 0
+        self._suppressed = 0
 
     # ------------------------------------------------------------------
     def _on_start(self) -> None:
@@ -138,6 +141,15 @@ class WakeWordModule(BaseModule):
                 self._transcriber.reset()
 
     def _trigger(self) -> None:
+        guard_s = self._config.wake_loopback_guard_s
+        if (guard_s > 0 and self._synthesizer is not None
+                and self._synthesizer.is_speaking_or_recent(guard_s)):
+            self._suppressed += 1
+            logger.debug(
+                "Wake word match suppressed — assistant's own TTS is "
+                "speaking or spoke within the last %.2fs (anti-loopback)",
+                guard_s)
+            return
         self._detections += 1
         logger.info("Wake word heard — starting a listening session")
         if self._bus is not None:
@@ -147,4 +159,5 @@ class WakeWordModule(BaseModule):
 
     def _metrics(self) -> dict:
         return {"phrase": self._config.wake_word,
-                "detections": self._detections}
+                "detections": self._detections,
+                "suppressed_loopback": self._suppressed}

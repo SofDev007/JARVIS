@@ -37,11 +37,18 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from digital_twin.memory.codec import CodecError, MemoryCodec, PlainCodec
+from digital_twin.security.privacy import PrivacyTier
 
 logger = logging.getLogger(__name__)
 
 KINDS = ("episodic", "semantic", "skill")
+_PRIVACY_TIERS = {tier.value for tier in PrivacyTier}
 
+# M20: privacy_tier defaults to 'local_only' at the schema level too, so any
+# row written by code that predates this column still reads as the safe
+# default. No migration path exists in this codebase (no ALTER TABLE
+# precedent) — an existing data/memory.db predating M20 needs deleting to
+# pick up the new column.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,
@@ -53,7 +60,8 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at REAL NOT NULL,
     last_accessed_at REAL NOT NULL,
     access_count INTEGER NOT NULL DEFAULT 0,
-    tags TEXT NOT NULL
+    tags TEXT NOT NULL,
+    privacy_tier TEXT NOT NULL DEFAULT 'local_only'
 );
 CREATE INDEX IF NOT EXISTS idx_memories_kind_created
     ON memories(kind, created_at DESC);
@@ -74,6 +82,7 @@ class MemoryRecord:
     last_accessed_at: float
     access_count: int
     tags: tuple[str, ...]
+    privacy_tier: str = "local_only"
 
 
 @dataclass(frozen=True)
@@ -118,14 +127,24 @@ class MemoryStore:
         source: str = "unknown",
         importance: float = 0.5,
         tags: Iterable[str] = (),
+        privacy_tier: str = "local_only",
     ) -> MemoryRecord:
-        """Persist one memory and return the stored record."""
+        """Persist one memory and return the stored record.
+
+        ``privacy_tier`` defaults to ``local_only`` (THREAT_MODEL.md §4.8) —
+        cloud-eligible content requires an explicit opt-in at a human-facing
+        write surface (the memory CLI's ``--privacy-tier`` flag), never a
+        config default a caller could silently loosen.
+        """
         if kind not in KINDS:
             raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
         if not content or not content.strip():
             raise ValueError("memory content must be non-empty")
         if not 0.0 <= importance <= 1.0:
             raise ValueError("importance must be within 0..1")
+        if privacy_tier not in _PRIVACY_TIERS:
+            raise ValueError(
+                f"privacy_tier must be one of {_PRIVACY_TIERS}, got {privacy_tier!r}")
 
         now = time.time()
         record = MemoryRecord(
@@ -139,10 +158,11 @@ class MemoryStore:
             last_accessed_at=now,
             access_count=0,
             tags=tuple(str(tag) for tag in tags),
+            privacy_tier=privacy_tier,
         )
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     record.id,
                     record.kind,
@@ -154,6 +174,7 @@ class MemoryStore:
                     record.last_accessed_at,
                     record.access_count,
                     json.dumps(list(record.tags)),
+                    record.privacy_tier,
                 ),
             )
         return record
@@ -357,6 +378,7 @@ class MemoryStore:
                 "last_accessed_at": record.last_accessed_at,
                 "access_count": record.access_count,
                 "tags": list(record.tags),
+                "privacy_tier": record.privacy_tier,
             }
             for record in records
         ]
@@ -388,4 +410,5 @@ class MemoryStore:
             last_accessed_at=row["last_accessed_at"],
             access_count=row["access_count"],
             tags=tuple(json.loads(row["tags"])),
+            privacy_tier=row["privacy_tier"],
         )

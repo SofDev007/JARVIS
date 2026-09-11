@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 import time
 import types
 
@@ -117,6 +118,43 @@ def test_synthesizer_without_backend_raises_guidance(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     with pytest.raises(SynthesisError, match="espeak-ng"):
         SpeechSynthesizer().speak("hi")
+
+
+def test_piper_syn_config_maps_rate_to_length_scale_and_clamps():
+    neutral = SpeechSynthesizer(backend="piper", rate_wpm=175)
+    assert neutral._piper_syn_config().length_scale == pytest.approx(1.0)
+
+    fast = SpeechSynthesizer(backend="piper", rate_wpm=350)  # 2x speed, clamps to subtle range
+    assert fast._piper_syn_config().length_scale == pytest.approx(0.85)
+
+    slow = SpeechSynthesizer(backend="piper", rate_wpm=10)  # would be >1.15 unclamped
+    assert slow._piper_syn_config().length_scale == pytest.approx(1.15)
+
+
+def test_piper_syn_config_applies_naturalness_noise_scales():
+    synth = SpeechSynthesizer(backend="piper")
+    config = synth._piper_syn_config()
+    assert config.noise_scale == pytest.approx(SpeechSynthesizer._NOISE_SCALE)
+    assert config.noise_w_scale == pytest.approx(SpeechSynthesizer._NOISE_W_SCALE)
+
+
+def test_is_speaking_or_recent_covers_blocking_piper_jarvis_playback(monkeypatch):
+    """`speaking` only polls a subprocess; Piper/Jarvis play back inside a
+    blocking call instead, so `is_speaking_or_recent` (the M19 anti-loopback
+    signal) must reflect that path too."""
+    synthesizer = SpeechSynthesizer(backend="piper")
+    monkeypatch.setattr(
+        synthesizer, "_speak_piper",
+        lambda text: time.sleep(0.15) or "piper: done")
+
+    thread = threading.Thread(target=lambda: synthesizer.speak("hello boss"))
+    thread.start()
+    time.sleep(0.05)
+    assert synthesizer.is_speaking_or_recent(0.05) is True  # still playing
+    thread.join()
+    assert synthesizer.is_speaking_or_recent(0.2) is True  # just finished
+    time.sleep(0.25)
+    assert synthesizer.is_speaking_or_recent(0.05) is False  # tail elapsed
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +267,31 @@ def _record(bus, topic):
     events = []
     bus.subscribe(topic, events.append)
     return events
+
+
+class _UninterruptibleFakeSynthesizer(FakeSynthesizer):
+    """Models the real bug ``stop()`` has for Piper/Jarvis playback: it's a
+    no-op (the audio call is blocking, not a killable subprocess), so the
+    mic-open guard can't rely on ``start_listening()``'s own ``stop()``
+    call actually silencing anything."""
+
+    def stop(self) -> bool:
+        return False
+
+
+def test_mic_waits_for_own_speech_to_clear_before_opening(bus):
+    synth = _UninterruptibleFakeSynthesizer()
+    synth.speak("Good evening, Boss.", source="system")
+    module, source = _module(bus, synthesizer=synth, wake_loopback_guard_s=0.05)
+    try:
+        module.start_listening()
+        time.sleep(0.15)
+        assert source.opened == 0  # own TTS still "playing" — mic held shut
+        synth._fake_speaking = False
+        synth._fake_ended_at = time.monotonic()
+        assert _wait(lambda: source.opened == 1, timeout=2.0)
+    finally:
+        module.stop()
 
 
 def test_push_to_talk_session_publishes_and_releases_mic(bus):

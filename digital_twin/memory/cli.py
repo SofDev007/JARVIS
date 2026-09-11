@@ -79,6 +79,10 @@ def build_parser() -> argparse.ArgumentParser:
     remember.add_argument("content")
     remember.add_argument("--tags", nargs="*", default=[])
     remember.add_argument("--importance", type=float, default=0.7)
+    remember.add_argument("--privacy-tier", choices=["local_only", "cloud_ok"],
+                          default="local_only",
+                          help="local_only (default) is never sent to a "
+                               "cloud LLM; cloud_ok is an explicit opt-in.")
 
     edit = commands.add_parser("edit", help="Edit content/importance/tags.")
     edit.add_argument("id")
@@ -167,6 +171,7 @@ def _dispatch(args: argparse.Namespace, store: MemoryStore) -> int:
         record = store.add(
             kind="semantic", content=args.content, source="cli",
             importance=args.importance, tags=tuple(args.tags),
+            privacy_tier=args.privacy_tier,
         )
         print(f"Stored: {_fmt(record)}")
         return 0

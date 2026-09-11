@@ -16,6 +16,7 @@ def test_defaults_load_without_file():
     assert config.gesture.enabled is True
     assert config.intent.default_context == "desktop"
     assert config.bus.max_queue_size == 1024
+    assert config.llm.screen_cloud_ok is False
 
 
 def test_yaml_overrides_subset(tmp_path):

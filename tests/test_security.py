@@ -68,6 +68,36 @@ def test_invalid_rule_string_denies():
     assert policy.evaluate("x", RiskLevel.SAFE) is Decision.DENY
 
 
+def test_tainted_dangerous_is_refused_not_confirmed():
+    """THREAT_MODEL.md §4.1: untrusted content cannot even get a confirm
+    prompt for a DANGEROUS action — it's refused outright, overriding
+    whatever the configured decision would otherwise be."""
+    policy = _default_policy()
+    assert policy.evaluate("wipe_disk", RiskLevel.DANGEROUS,
+                           tainted=True) is Decision.DENY
+    allow_configured = PermissionPolicy(risk_defaults={"dangerous": "allow"})
+    assert allow_configured.evaluate("wipe_disk", RiskLevel.DANGEROUS,
+                                     tainted=True) is Decision.DENY
+
+
+def test_tainted_allow_escalates_to_confirm():
+    """A SAFE action that would normally auto-run can't run silently when
+    untrusted content (RAG/OCR) was present this turn."""
+    policy = _default_policy()
+    assert policy.evaluate("log_message", RiskLevel.SAFE,
+                           tainted=True) is Decision.CONFIRM
+    # Already-confirm or already-deny decisions are unaffected.
+    assert policy.evaluate("open_url", RiskLevel.SENSITIVE,
+                           tainted=True) is Decision.CONFIRM
+
+
+def test_tainted_false_is_the_default_and_unchanged_behavior():
+    policy = _default_policy()
+    assert policy.evaluate("log_message", RiskLevel.SAFE) is Decision.ALLOW
+    assert policy.evaluate("log_message", RiskLevel.SAFE,
+                           tainted=False) is Decision.ALLOW
+
+
 # ---------------------------------------------------------------------------
 # Confirmation providers
 # ---------------------------------------------------------------------------
@@ -86,6 +116,21 @@ def test_scripted_provider_pops_answers_and_records():
     assert provider.request("b", {}, 1.0) is False
     assert provider.request("c", {}, 1.0) is False  # exhausted → deny
     assert provider.requests == [("a", {"k": 1}), ("b", {}), ("c", {})]
+
+
+def test_scripted_provider_records_tainted_flag():
+    provider = ScriptedConfirmation([True, True])
+    provider.request("a", {}, 1.0)  # default: not tainted
+    provider.request("b", {}, 1.0, tainted=True)
+    assert provider.tainted_flags == [False, True]
+
+
+def test_auto_deny_accepts_tainted_kwarg():
+    assert AutoDenyConfirmation().request("x", {}, timeout_s=1.0, tainted=True) is False
+
+
+def test_console_accepts_tainted_kwarg_still_denies_without_tty():
+    assert ConsoleConfirmation().request("x", {}, timeout_s=1.0, tainted=True) is False
 
 
 def test_factory_selects_by_name_and_fails_safe():

@@ -37,9 +37,11 @@ browser = ["playwright>=1.44"]
 keyring = ["keyring>=24"]
 semantic = ["sentence-transformers>=2.6"]
 voice = ["sounddevice>=0.4", "vosk>=0.3.45"]
+tts = ["piper-tts"]
+tts-jarvis = ["piper-tts", "coqui-tts", "torch", "torchaudio", "soundfile"]
 dev = ["pytest>=7.4"]
 all = [
-    "digital-twin-assistant[gesture,encryption,browser,keyring,voice,semantic,dev]",
+    "digital-twin-assistant[gesture,encryption,browser,keyring,voice,tts,semantic,dev]",
 ]
 
 [project.scripts]

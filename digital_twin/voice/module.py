@@ -20,6 +20,9 @@ Extras that make it feel alive:
 * live partials on ``perception.voice.partial`` (future UI captioning),
 * **barge-in**: a partial transcript while the assistant is speaking stops
   the current utterance immediately,
+* **anti-loopback**: a listening session never opens the mic while the
+  assistant's own TTS output might still be in the air (M19, threat model
+  §4.5) — same guard window as the wake-word detector's,
 * **spoken replies**: when enabled, ``chat.response`` events are voiced by
   publishing a gated ``action.execute {speak}`` — the assistant's own
   voice passes the permission system, so one rule mutes it.
@@ -231,6 +234,7 @@ class VoicePerceptionModule(BaseModule):
         if source is None or transcriber is None:
             self._listen.clear()
             return
+        self._wait_for_own_speech_to_clear()
         try:
             source.open()
         except Exception as exc:
@@ -273,6 +277,26 @@ class VoicePerceptionModule(BaseModule):
             self._listen.clear()
             source.close()
             logger.info("Microphone released")
+
+    def _wait_for_own_speech_to_clear(self) -> None:
+        """Anti-loopback (M19, threat model §4.5): don't open the mic while
+        our own TTS output might still be in the air, so a listening session
+        can never transcribe the assistant's own voice as if it were the
+        user's. ``start_listening()`` already calls ``synthesizer.stop()``,
+        but that's a no-op for the default Piper/Jarvis backends (playback
+        there is a blocking call, not a killable subprocess) — this is the
+        real guard, reusing the same signal and config window as the
+        wake-word detector's guard rather than inventing a second one."""
+        if self._synthesizer is None:
+            return
+        guard_s = self._config.wake_loopback_guard_s
+        if guard_s <= 0:
+            return
+        deadline = time.monotonic() + self._config.max_utterance_s
+        while (self._synthesizer.is_speaking_or_recent(guard_s)
+               and not self._stop.is_set()
+               and time.monotonic() < deadline):
+            time.sleep(0.05)
 
     # ------------------------------------------------------------------
     def _emit_partial(self, text: str) -> None:

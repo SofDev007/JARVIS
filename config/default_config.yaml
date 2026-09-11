@@ -301,7 +301,7 @@ voice:
                                # mute with security.permissions: {speak: deny}
   tts_backend: jarvis          # jarvis (XTTS-v2 pre-cache) | auto | espeak-ng | espeak | say | powershell
   tts_rate_wpm: 175
-  piper_voice: en_GB-alan-low
+  piper_voice: en_GB-alan-medium
   piper_data_dir: models/piper
   jarvis_reference_wav: voices/reference_voice.wav
   jarvis_precache_dir: voices/precache
@@ -320,6 +320,9 @@ voice:
                               # (pip install sounddevice) to open the mic.
   wake_word_full_form: "Just a rather very intelligent system"
   wake_backend: auto          # auto (reuse STT) | scripted (tests)
+  wake_loopback_guard_s: 0.4  # anti-loopback: ignore wake triggers while/just
+                               # after JARVIS's own TTS is speaking, so it
+                               # can't re-trigger its own mic saying its name
 
 planner:
   enabled: true

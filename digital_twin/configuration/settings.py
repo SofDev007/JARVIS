@@ -439,6 +439,11 @@ class LLMConfig:
     """Conversation turns kept in the prompt window."""
     memory_results: int = 5
     """Ranked memories injected into each prompt (0 disables recall)."""
+    screen_cloud_ok: bool = False
+    """Whether OCR'd screen text may enter cloud prompts (THREAT_MODEL.md
+    §4.8). False (default) omits fresh screen text from the prompt when
+    ``provider`` isn't local; ``provider == "ollama"`` always includes it —
+    nothing to protect on-device."""
 
 
 @dataclass(frozen=True)
@@ -572,7 +577,7 @@ class VoiceConfig:
     | ``say`` | ``powershell``. Piper is fast local TTS; jarvis uses
     pre-cached XTTS-v2 for system phrases only."""
     tts_rate_wpm: int = 175
-    piper_voice: str = "en_GB-alan-low"
+    piper_voice: str = "en_GB-alan-medium"
     """Piper voice ID for live synthesis. Downloaded on first use from
     HuggingFace (rhasspy/piper-voices). Common options: en_GB-alan-low,
     en_US-lessac-low, en_US-amy-low."""
@@ -605,6 +610,15 @@ class VoiceConfig:
     """``auto`` (reuse the STT transcriber) | ``scripted`` (tests)."""
     wake_word_full_form: str = "Just a rather very intelligent system"
     """Full expansion of the wake word acronym, used in greetings and help."""
+    wake_loopback_guard_s: float = 0.4
+    """Anti-loopback guard (M18 threat model §4.5): the wake-word detector
+    ignores triggers while the assistant's own TTS is speaking, plus this
+    many seconds afterward — so JARVIS saying its own name can't re-trigger
+    its own always-on mic. A time-window suppression, not audio-content
+    fingerprinting: it also delays a genuine wake-word barge-in during this
+    window, a deliberate simplification given no echo-cancellation
+    infrastructure exists. Set to ``0`` to disable (not recommended if
+    ``wake_word`` and TTS are both enabled)."""
 
 
 @dataclass(frozen=True)
