@@ -3,6 +3,37 @@
 All notable changes to the Digital Twin AI Assistant.
 Format follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased] — Milestone 24: Adversarial plugin sandbox suite
+
+### Added
+- **Red-team test suite** for the subprocess plugin sandbox
+  (`tests/test_plugin_sandbox_redteam.py`, 5 tests): deliberate escape
+  attempts rather than functional exercise — environment inspection, a
+  raw-stdout protocol desync, an unresponsive child, and a
+  process-spawning grandchild. Closes THREAT_MODEL.md §4.7's "not
+  adversarially tested" residual.
+
+### Fixed / Security
+- **Environment variable leak** (`digital_twin/plugins/sandbox.py`):
+  `subprocess.Popen` with no `env=` inherited the parent's full
+  environment — a sandboxed plugin could read `os.environ["GEMINI_API_KEY"]`
+  (or any other secret set via the documented env-var fallback) directly,
+  contradicting the documented isolation claim. Fixed with `_child_env()`,
+  an explicit allowlist (PATH, SYSTEMROOT, TEMP, locale/encoding — nothing
+  secret-bearing); confirmed closed with a live repro before and after.
+- **Orphaned grandchild process** (`digital_twin/plugins/sandbox.py`): a
+  plugin that spawned its own subprocess and exited left that subprocess
+  running after `SandboxedPlugin.close()` — confirmed with a real PID
+  still alive post-close. Root cause was two-fold: (1) a bare
+  `Popen.kill()` only signals the immediate child on Windows, no
+  descendants — fixed with `_kill_tree()` (`taskkill /T /F` on Windows,
+  process-group kill via `start_new_session=True` on POSIX); (2) `close()`
+  used to send a polite `{"op": "shutdown"}` message and wait for a
+  graceful exit before falling back to a kill — but `taskkill /T` needs
+  the *parent* PID still alive to walk its process tree, so waiting for
+  graceful exit first always lost the race. Fixed by dropping the polite
+  handshake entirely: `close()` now sweeps immediately every time.
+
 ## [Unreleased] — Milestone 23: Ingestion quarantine
 
 ### Added

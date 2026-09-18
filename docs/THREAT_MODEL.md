@@ -366,20 +366,58 @@ backend and is what the guard above actually reads.
 `server.py` compared the dashboard token with `==` (timing-observable).
 Now uses `secrets.compare_digest` on the encoded bytes.
 
-### 4.7 Plugin sandbox escape 🟡
+### 4.7 Plugin sandbox escape 🟡 M24 (adversarial suite landed; residual noted)
 
 **Actor:** T2 · **Asset:** A1, A3
 
-Subprocess isolation with manifest contracts. Sandbox tests pass (10/10) and
-correctly refuse secret access.
+Subprocess isolation with manifest contracts. Sandbox tests pass (10/10
+functional + 5/5 adversarial) and correctly refuse secret access.
 
-**Residual:** the sandbox has not been adversarially tested, only
-functionally tested. Passing tests means it blocks what we thought to check.
+**M24 — adversarial red-team suite, two real findings, both fixed:**
+`tests/test_plugin_sandbox_redteam.py` deliberately attacked the sandbox
+rather than just exercising it, and found:
 
-**Proposed:** a red-team test suite of deliberate escape attempts —
-filesystem traversal, environment inspection, IPC abuse, resource
-exhaustion. Not urgent while all plugins are first-party. Becomes urgent the
-moment a third-party plugin is installed.
+1. **Environment inspection (fixed).** `subprocess.Popen` with no `env=`
+   inherits the parent's *full* environment — a "sandboxed" plugin could
+   read `os.environ["GEMINI_API_KEY"]` (or any other secret set via the
+   documented env-var fallback) directly, contradicting the documented
+   claim that a sandboxed plugin cannot touch the secret store. Fixed:
+   `sandbox.py`'s `_child_env()` passes an explicit allowlist (PATH,
+   SYSTEMROOT, TEMP, locale/encoding variables — nothing secret-bearing)
+   instead of inheriting anything.
+2. **IPC abuse / orphaned descendants (fixed).** A plugin that spawns its
+   own subprocess and exits (or is killed) left that subprocess running
+   — confirmed with a real grandchild process still alive after
+   `SandboxedPlugin.close()`. Two compounding bugs: (a) a bare
+   `Popen.kill()` only signals the immediate child on Windows, no
+   descendants; (b) the fix for (a) — `taskkill /T`, which walks the
+   process tree by PID lineage — only works while the *parent* PID is
+   still alive to walk from, so waiting for a graceful shutdown first
+   (as `close()` used to) always lost the race: the child answers and
+   exits before the tree-kill runs. Fixed: `close()` no longer sends a
+   polite shutdown message at all — it goes straight to `_kill_tree()`,
+   which always sweeps (Windows: `taskkill /T /F`; POSIX: kill the
+   process group `start_new_session=True` put the child in), whether or
+   not the immediate child has already exited.
+
+**Residual, stated plainly — what the suite does *not* claim to contain:**
+filesystem and network access are **not** jailed for plugin code itself
+(no chroot/namespace; a plugin can read/write anywhere the OS user
+account can, and make arbitrary network calls) — this was never the
+sandbox's promise; the promise is API-surface scoping (no bus, no
+secrets, no other plugins) and lifecycle containment (a crash/hang/
+hostile child cannot outlive one call or one `close()`, and now no
+longer leaves a descendant behind either). Resource exhaustion (CPU/
+memory) has no cap beyond the per-call timeout killing a hung child —
+a plugin that allocates aggressively *during* a call within the timeout
+window is not stopped. OS-level sandboxing (seccomp/containers/job-object
+resource limits) remains unbuilt and is the actual fix for both of those,
+consistent with §4.7's original framing.
+
+**Not urgent while all plugins are first-party. Becomes urgent the moment
+a third-party plugin is installed** — unchanged from before this
+milestone; M24 raised the floor of what's contained, it didn't remove
+the need for OS-level sandboxing before trusting an untrusted plugin.
 
 ### 4.8 Cloud LLM data exposure ✅ M20
 
@@ -516,30 +554,38 @@ Revisit the whole document if any of these change:
 | **M22** | Phone thin client, no secrets at rest, remote revoke | §4.9 |
 | **M21** ✅ | Prompt-injection controls — taint flag from RAG/OCR, untrusted content cannot silently originate actions, structural delimiting | §4.1, B3 |
 | **M23** ✅ | Ingestion quarantine — pending-approval queue for folder-watched documents, dashboard approve/reject panel (§4.1 control #5, scoped out of M21) | §4.1 |
-| **Unscheduled** | Adversarial plugin sandbox suite; venv + lockfile + `pip-audit` | §4.7, §4.10 |
+| **M24** ✅ | Adversarial plugin sandbox suite — env-var allowlist (closed a real secret-leak path), always-tree-kill on close (closed a real orphaned-descendant leak) | §4.7 |
+| **Unscheduled** | venv + lockfile + `pip-audit`; OS-level plugin sandboxing (seccomp/containers) | §4.10, §4.7 residual |
 
 ---
 
 ## 9. Recommendation
 
-M18, M19, M20, M21, and M23 are complete. The threat this section used to
-name as the highest-severity unaddressed item — §4.1, prompt injection —
+M18, M19, M20, M21, M23, and M24 are complete. The threat this section used
+to name as the highest-severity unaddressed item — §4.1, prompt injection —
 now has a control: untrusted RAG/OCR content is tagged (mechanically, not
 by asking the model to self-report) and refused, not merely confirmed, when
 it's the only thing that could justify a DANGEROUS action. §4.1's control
 #5 (ingestion quarantine), the one piece explicitly scoped out of M21,
 landed in M23: folder-watched documents now wait for a human approve/reject
-in the dashboard before entering the corpus at all.
+in the dashboard before entering the corpus at all. M24 red-teamed the
+plugin sandbox instead of only functionally testing it, and the two real
+findings it surfaced (an env-var secret leak, an orphaned-descendant-
+process leak) are both fixed — the sandbox is more honest about what it
+contains now than it was assumed to be.
 
 What remains, in rough priority order:
 
-1. **Adversarial plugin sandbox testing** (§4.7) — becomes urgent the
-   moment a third-party plugin is installed; not urgent while all plugins
-   are first-party.
-2. **Dependency supply chain hygiene** (§4.10) — venv, lockfile, upper
+1. **Dependency supply chain hygiene** (§4.10) — venv, lockfile, upper
    Python bound, `pip-audit` in the loop.
+2. **OS-level plugin sandboxing** (§4.7 residual) — seccomp/containers;
+   the actual fix for filesystem/network/resource containment, which the
+   subprocess boundary never claimed to provide. Not urgent while all
+   plugins are first-party; becomes urgent the moment a third-party one
+   is installed.
 3. **M22** (§4.9, phone thin client) — still the next *scheduled*
-   milestone; unaffected by M23 landing out of numeric order ahead of it.
+   milestone; unaffected by M23/M24 landing out of numeric order ahead of
+   it.
 
 An assistant that perceives everything and can act on the host has an
 attack surface that a chatbot does not. M18's controls protect the
