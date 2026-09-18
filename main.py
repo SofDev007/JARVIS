@@ -68,16 +68,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _console_reporter(event: Event) -> None:
-    """Human-readable event trace on stdout (the kernel's minimal 'UI')."""
-    if event.topic == Topics.CHAT_RESPONSE:
-        print(f"\nAssistant: {event.payload.get('text')}")
-        reasoning = event.payload.get("reasoning")
-        if reasoning:
-            print(f"  (reasoning: {reasoning})")
-        return
-    if event.topic == Topics.CHAT:
-        return  # the user just typed it; echoing is noise
-    print(f"  {event}")
+    """Human-readable event trace on stdout (the kernel's minimal 'UI').
+
+    Deliberately narrow: only the assistant's spoken reply. Everything else
+    (module lifecycle, action gating, raw event payloads) still goes to the
+    log file at INFO — see ``_VOICE_CONSOLE_LOGGERS`` in logging_setup.py
+    for the handful of voice-pipeline log lines (wake word, mic open/close,
+    heard text) that are also allowed through to the console.
+    """
+    print(f"\nAssistant: {event.payload.get('text')}")
+    reasoning = event.payload.get("reasoning")
+    if reasoning:
+        print(f"  (reasoning: {reasoning})")
 
 
 def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> ModuleRegistry:
@@ -254,6 +256,12 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
         ))
         logger.info("Dashboard will listen on http://%s:%s",
                     config.dashboard.host, config.dashboard.port)
+    if config.airboard.enabled:
+        from digital_twin.airboard.module import AirboardModule
+
+        registry.register(AirboardModule(config.airboard))
+        logger.info("Air board will listen on http://%s:%s",
+                    config.airboard.host, config.airboard.port)
     if config.planner.enabled and config.automation.enabled:
         from digital_twin.planner.module import PlannerModule
 
@@ -345,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         slow_handler_warn_ms=config.bus.slow_handler_warn_ms,
     )
     bus.start()
-    bus.subscribe("*", _console_reporter, name="console")
+    bus.subscribe(Topics.CHAT_RESPONSE, _console_reporter, name="console")
 
     with_gesture = config.gesture.enabled and not args.no_gesture
     try:

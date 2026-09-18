@@ -58,12 +58,18 @@ digital-twin-memory = "digital_twin.memory.cli:main"
 digital-twin-secrets = "digital_twin.security.secrets_cli:main"
 digital-twin-audit = "digital_twin.security.audit_cli:main"
 digital-twin-device = "digital_twin.security.device_cli:main"
+digital-twin-airboard = "digital_twin.airboard.run:main"
+digital-twin-board = "digital_twin.airboard.cli_board:main"
+digital-twin-board-state = "digital_twin.airboard.cli_board_state:main"
 
 [tool.setuptools]
 py-modules = ["main"]
 
 [tool.setuptools.packages.find]
 include = ["digital_twin*", "gesturesense*"]
+
+[tool.setuptools.package-data]
+"digital_twin.airboard" = ["static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

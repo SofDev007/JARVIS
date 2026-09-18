@@ -312,6 +312,41 @@ class DashboardConfig:
 
 
 @dataclass(frozen=True)
+class AirboardConfig:
+    """The gesture-controlled overlay board: markdown notes, images and 3D
+    models floating over the camera feed as glass cards, driven by an
+    on-screen hand tracker and/or an AI agent POSTing JSON commands.
+
+    **Loopback only, off by default** — same posture as :class:`DashboardConfig`.
+    Unlike the dashboard there is no per-session token: every endpoint is
+    open to any local process that can reach the bound port, matching the
+    ported reference implementation's stated model ("this never leaves
+    localhost"). Orb paths (a personal notes vault, a media props folder)
+    are deliberately kept out of this typed config and out of version
+    control — see ``orbs_file``.
+    """
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8794
+    """TCP port (0 = ephemeral, mainly for tests)."""
+    allow_remote: bool = False
+    """Permit binding non-loopback hosts. Off by default on purpose."""
+    name: str = "JARVIS"
+    """Shown in the page UI; has no security meaning."""
+    state_timeout_s: int = 600
+    """A stale non-idle agent state (state/state) decays to idle after this."""
+    state_dir: str = "data/airboard/state"
+    """Heartbeat files the agent writes: state, mood.json, wave.json."""
+    media_dir: str = "data/airboard/media"
+    """Default media airlock root, used when no orb of kind 'media' is
+    configured in ``orbs_file``."""
+    orbs_file: str = "config/airboard.local.yaml"
+    """Gitignored YAML listing the notes/media orbs — personal file-system
+    paths, so kept out of the tracked default config entirely."""
+
+
+@dataclass(frozen=True)
 class KnowledgeConfig:
     """The knowledge engine: local document ingestion + vector recall.
 
@@ -674,6 +709,7 @@ class AppConfig:
     secrets: SecretsConfig = field(default_factory=SecretsConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    airboard: AirboardConfig = field(default_factory=AirboardConfig)
     knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     chat: ChatConfig = field(default_factory=ChatConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -722,6 +758,7 @@ def _validate(config: AppConfig) -> AppConfig:
     secrets = config.secrets
     browser = config.browser
     dashboard = config.dashboard
+    airboard = config.airboard
     knowledge = config.knowledge
     _DECISIONS = {"allow", "confirm", "deny"}
     _RISKS = {"safe", "sensitive", "dangerous"}
@@ -912,6 +949,22 @@ def _validate(config: AppConfig) -> AppConfig:
          "dashboard.recent_events must be in 10..5000"),
         (not (security.confirmation == "web" and not dashboard.enabled),
          "security.confirmation: web requires dashboard.enabled: true"),
+        (isinstance(airboard.port, int) and 0 <= airboard.port <= 65535,
+         "airboard.port must be 0..65535"),
+        (bool(str(airboard.host).strip()),
+         "airboard.host must be a hostname or address"),
+        (airboard.allow_remote
+         or str(airboard.host) in ("127.0.0.1", "localhost", "::1"),
+         "airboard.host must be loopback unless airboard.allow_remote is "
+         "true"),
+        (airboard.state_timeout_s > 0,
+         "airboard.state_timeout_s must be > 0"),
+        (bool(str(airboard.state_dir).strip()),
+         "airboard.state_dir must be a directory path"),
+        (bool(str(airboard.media_dir).strip()),
+         "airboard.media_dir must be a directory path"),
+        (bool(str(airboard.orbs_file).strip()),
+         "airboard.orbs_file must be a file path"),
         (bool(str(knowledge.db_path).strip()),
          "knowledge.db_path must be a file path"),
         (knowledge.embedder in ("hashing", "semantic"),
