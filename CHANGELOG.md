@@ -3,6 +3,38 @@
 All notable changes to the Digital Twin AI Assistant.
 Format follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased] — Milestone 23: Ingestion quarantine
+
+### Added
+- **Ingestion quarantine** (`digital_twin/knowledge/quarantine.py`,
+  `IngestionQuarantine`): the folder watcher no longer auto-ingests a new
+  or changed document — it extracts the text, checks it's not already in
+  the store (`KnowledgeStore.find_by_content_hash`, read-only), and
+  offers it for review instead of writing it in. The write only happens
+  on `KnowledgeWatchModule.approve(id)`, a human decision; `reject(id)`
+  discards it and remembers the content hash so it isn't re-offered every
+  scan. Closes THREAT_MODEL.md §4.1 control #5, explicitly scoped out of
+  M21.
+- **Dashboard panel**: `GET /api/quarantine` lists pending documents;
+  `POST /api/quarantine/<id>` `{"approve": true|false}` resolves one,
+  token-guarded like every other state-changing dashboard endpoint. Wired
+  through `DashboardModule`/`DashboardServer` exactly like the existing
+  confirmations panel, but with no timeout — a document sits until a
+  human looks at it, not until a clock runs out.
+- `KnowledgeStore.find_by_content_hash` / `compute_content_hash`: the
+  read-only half of `ingest`'s existing dedup check, factored out so a
+  caller can ask "would this be new content?" without writing anything.
+- 4 new tests in `tests/test_document_ingestion.py` (queue-not-ingest,
+  approve writes through, reject doesn't re-offer, unknown id refused)
+  and 1 in `tests/test_dashboard.py` (the endpoint end to end, including
+  the missing-token 403).
+
+### Changed
+- `KnowledgeWatchModule.scan_once()` now returns the count of newly
+  *queued* documents, not ingested ones — existing tests asserting
+  auto-ingest behavior were updated to the new approve/reject flow
+  (`digital_twin/knowledge/watch.py`'s docstring was updated to match).
+
 ## [Unreleased] — Milestone 18: ACL hardening & audit integrity
 
 ### Phase 1 — dependency and config repair (already landed)

@@ -199,6 +199,13 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
             except Exception:
                 dash_memory = None
 
+        dash_knowledge_watch = None
+        if config.knowledge.enabled and config.knowledge.watch_paths:
+            try:
+                dash_knowledge_watch = registry.get("knowledge_watch")
+            except Exception:
+                dash_knowledge_watch = None
+
         # M18 Phase 3: Device registry and device confirmation for mTLS
         device_registry = None
         device_confirmation = None
@@ -243,6 +250,7 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
             device_registry=device_registry,
             device_confirmation=device_confirmation,
             security_config=config.security,
+            knowledge_watch=dash_knowledge_watch,
         ))
         logger.info("Dashboard will listen on http://%s:%s",
                     config.dashboard.host, config.dashboard.port)

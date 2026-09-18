@@ -278,6 +278,57 @@ def test_memory_and_knowledge_endpoints(kernel, tmp_path):
         module.stop()
 
 
+def test_quarantine_endpoint_lists_and_resolves(kernel, tmp_path):
+    from digital_twin.configuration.settings import FilesConfig, KnowledgeConfig
+    from digital_twin.dashboard.module import DashboardModule
+    from digital_twin.knowledge.embedding import HashingEmbedder
+    from digital_twin.knowledge.store import KnowledgeStore
+    from digital_twin.knowledge.watch import KnowledgeWatchModule
+
+    bus, registry = kernel
+    watch_dir = tmp_path / "docs"
+    watch_dir.mkdir()
+    (watch_dir / "a.md").write_text("First document about penguins.")
+    knowledge = KnowledgeStore(tmp_path / "k.db", HashingEmbedder(64))
+    watcher = KnowledgeWatchModule(
+        KnowledgeConfig(watch_paths=[str(watch_dir)]),
+        FilesConfig(allowed_roots=[str(tmp_path)]),
+        knowledge,
+    )
+    watcher.scan_once()
+    [pending] = watcher.pending()
+
+    module = DashboardModule(
+        DashboardConfig(enabled=True, port=0), registry,
+        knowledge_watch=watcher,
+    )
+    registry.register(module)
+    module.start(bus)
+    try:
+        _, body = _get(module.port, "/api/quarantine")
+        listed = json.loads(body)["pending"]
+        assert listed == [pending]
+
+        # No token -> refused, same as every other POST endpoint.
+        status, _ = _post(module.port, f"/api/quarantine/{pending['id']}",
+                          {"approve": True})
+        assert status == 403
+
+        status, body = _post(module.port, f"/api/quarantine/{pending['id']}",
+                             {"approve": True}, token=module.token)
+        assert status == 200
+        assert body["resolved"] is True
+        assert [doc.title for doc in knowledge.documents()] == ["a.md"]
+        assert watcher.pending() == []
+
+        # unknown id -> 404, not a crash
+        status, body = _post(module.port, "/api/quarantine/q999",
+                             {"approve": True}, token=module.token)
+        assert status == 404
+    finally:
+        module.stop()
+
+
 def test_sse_stream_pushes_new_events(dashboard, kernel):
     import http.client
 

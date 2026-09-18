@@ -131,6 +131,13 @@ def chunk_text(text: str, chunk_chars: int, overlap: int) -> list[str]:
     return chunks
 
 
+def compute_content_hash(text: str) -> str:
+    """The same hash :meth:`KnowledgeStore.ingest` dedupes on — exposed so
+    a caller (the ingestion quarantine) can check "would this be new
+    content?" before deciding whether to write anything."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 class KnowledgeStore:
     """Thread-safe SQLite-backed document/chunk/vector store."""
 
@@ -197,7 +204,7 @@ class KnowledgeStore:
         if privacy_tier not in _PRIVACY_TIERS:
             raise ValueError(
                 f"privacy_tier must be one of {_PRIVACY_TIERS}, got {privacy_tier!r}")
-        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        content_hash = compute_content_hash(text)
         with self._lock:
             row = self._connection.execute(
                 "SELECT id, (SELECT COUNT(*) FROM chunks WHERE doc_id = documents.id) "
@@ -233,6 +240,19 @@ class KnowledgeStore:
         logger.info("Ingested %r (%d chunks) from %s", title, len(chunks),
                     source)
         return doc_id, len(chunks), True
+
+    def find_by_content_hash(self, text: str) -> tuple[int, int] | None:
+        """Read-only: ``(doc_id, chunk_count)`` if this exact content is
+        already stored, else ``None``. Never writes — lets a caller (the
+        ingestion quarantine) decide whether something is worth queuing
+        for review without committing it first."""
+        content_hash = compute_content_hash(text)
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT id, (SELECT COUNT(*) FROM chunks WHERE doc_id = documents.id) "
+                "FROM documents WHERE content_hash = ?",
+                (content_hash,)).fetchone()
+        return (row[0], row[1]) if row is not None else None
 
     def search(self, query: str, top_k: int = 3,
                min_score: float = 0.1) -> list[KnowledgeHit]:

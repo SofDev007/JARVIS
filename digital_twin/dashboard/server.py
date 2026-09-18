@@ -81,6 +81,8 @@ margin-top:8px;flex-wrap:wrap} .stats b{color:var(--text)}
 <div class="grid">
  <div class="panel wide" id="confirm-panel" style="display:none">
   <h2>Waiting for your approval</h2><div id="confirms"></div></div>
+ <div class="panel wide" id="quarantine-panel" style="display:none">
+  <h2>Documents waiting for review</h2><div id="quarantine"></div></div>
  <div class="panel"><h2>Modules</h2>
   <table><thead><tr><th>module</th><th>state</th><th>detail</th></tr></thead>
   <tbody id="modules"></tbody></table>
@@ -143,6 +145,19 @@ async function refresh(){
     `<button class="deny" onclick="answer('${p.id}',false)">Deny</button>`+
     `</div>`).join("");
   } else panel.style.display="none";
+  try{
+   const q=await get("/api/quarantine");
+   const qpanel=document.getElementById("quarantine-panel");
+   if(q&&q.pending&&q.pending.length){qpanel.style.display="block";
+    document.getElementById("quarantine").innerHTML=q.pending.map(p=>
+     `<div class="confirm">Ingest <code>${esc(p.title)}</code> `+
+     `<span class="empty">from ${esc(p.source)}, ${p.chars} chars</span>`+
+     `<br><br>`+
+     `<button onclick="answerQuarantine('${p.id}',true)">Approve</button>`+
+     `<button class="deny" onclick="answerQuarantine('${p.id}',false)">Reject</button>`+
+     `</div>`).join("");
+   } else if(qpanel) qpanel.style.display="none";
+  }catch(e){}
   try{
    const m=await get("/api/memory");
    const md=document.getElementById("memory");
@@ -216,6 +231,8 @@ async function refresh(){
 }
 async function answer(id,ok){await post("/api/confirmations/"+id,
   {approve:ok});refresh()}
+async function answerQuarantine(id,ok){await post("/api/quarantine/"+id,
+  {approve:ok});refresh()}
 document.getElementById("send").onclick=async()=>{
  const box=document.getElementById("chattext");
  if(box.value.trim()){await post("/api/chat",{text:box.value.trim()});
@@ -251,6 +268,7 @@ class DashboardServer:
         frame_hub=None,  # FrameHub | None — MJPEG at /api/frames/<name>
         device_registry=None,  # M18 Phase 3: DeviceRegistry for mTLS
         device_confirmation=None,  # M18 Phase 3: DeviceConfirmationProvider
+        quarantine_resolve=None,  # Callable[[str, bool], bool] | None
     ):
         self._token = _secrets.token_hex(16)
         page = _PAGE.replace("__TOKEN__", self._token).replace(
@@ -405,6 +423,16 @@ class DashboardServer:
                     else:
                         resolved = confirmations.resolve(
                             confirmation_id, approved)
+                    self._json(200 if resolved else 404,
+                               {"resolved": resolved})
+                elif self.path.startswith("/api/quarantine/"):
+                    if quarantine_resolve is None:
+                        self._json(409, {"error":
+                                         "no folder watch is running"})
+                        return
+                    quarantine_id = self.path.rsplit("/", 1)[-1]
+                    approved = bool(body.get("approve"))
+                    resolved = quarantine_resolve(quarantine_id, approved)
                     self._json(200 if resolved else 404,
                                {"resolved": resolved})
                 elif self.path == "/api/chat":

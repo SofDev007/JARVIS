@@ -174,14 +174,39 @@ logging, or the model's own `"remember"` field — not an external injection
 surface. Including it would falsely taint nearly every turn once any fact
 has ever been recalled.
 
-**Scoped out, explicitly — control #5 (ingestion quarantine):** "Folder
-watching should quarantine new documents pending approval rather than
-auto-indexing" is a separate, real feature (a pending-approval queue plus
-an approve/reject action) and was not built in M21. The folder watcher
-still auto-ingests as `local_only` (§4.8/M20) but without a human gate on
-*when* new content enters the corpus. Natural follow-up, not a
-prerequisite — the four controls implemented here are the ones this
-document itself called highest-value.
+**Control #5 (ingestion quarantine) — landed M23, was scoped out of M21.**
+"Folder watching should quarantine new documents pending approval rather
+than auto-indexing" is now real: `digital_twin/knowledge/quarantine.py`
+(`IngestionQuarantine`) plus `KnowledgeWatchModule._consider` in
+`digital_twin/knowledge/watch.py` — a watched file is extracted and,
+unless its content already matches something in the store
+(`KnowledgeStore.find_by_content_hash`, a read-only pre-check so nothing
+is written before review), it's offered to the quarantine instead of
+ingested. The write only happens on `KnowledgeWatchModule.approve(id)`, a
+human decision surfaced as a dashboard panel (`GET /api/quarantine`,
+`POST /api/quarantine/<id>` `{"approve": true|false}`, token-guarded like
+every other state-changing dashboard endpoint). A rejection is remembered
+by content hash so the same document isn't re-offered every scan
+interval; an approval writes through `KnowledgeStore.ingest` exactly as
+before, still defaulting to the `local_only` privacy tier (§4.8/M20) —
+this control gates *when* content enters the corpus, not where it's
+allowed to travel once it has.
+
+Deliberately **not** built on `ConfirmationProvider` (the dispatcher's
+existing confirm gate): that primitive blocks a worker on a short timeout
+and denies by default when nobody answers — exactly wrong for "found at
+3am, reviewed at 9am." `IngestionQuarantine` has no expiry; an entry sits
+until a human actually looks at it.
+
+**Ceiling, stated plainly:** the quarantine queue is in-memory, not
+persisted — a restart doesn't lose *content* (the watcher re-scans and
+re-offers anything not yet ingested) but does lose any rejection decided
+since the last content change, so a previously-rejected file is offered
+again after a restart until rejected again. Also unaddressed here: the
+`ingest_document`/`ingest_text` actions (chat/agent-invoked, already
+SENSITIVE/human-confirmed at the point of the call) never went through
+quarantine and still don't — the gap this control closes is specifically
+the *unattended* watcher path, which had no human step at all.
 
 **Ceiling, stated plainly:** the taint flag is coarse — it marks an entire
 turn tainted if *any* knowledge/screen content was included, whether or not
@@ -490,30 +515,31 @@ Revisit the whole document if any of these change:
 | **M20** ✅ | Privacy tiers on memory and RAG; local-only routing | §4.8, B6 |
 | **M22** | Phone thin client, no secrets at rest, remote revoke | §4.9 |
 | **M21** ✅ | Prompt-injection controls — taint flag from RAG/OCR, untrusted content cannot silently originate actions, structural delimiting | §4.1, B3 |
+| **M23** ✅ | Ingestion quarantine — pending-approval queue for folder-watched documents, dashboard approve/reject panel (§4.1 control #5, scoped out of M21) | §4.1 |
 | **Unscheduled** | Adversarial plugin sandbox suite; venv + lockfile + `pip-audit` | §4.7, §4.10 |
-| **Unscheduled** | Ingestion quarantine — pending-approval queue for folder-watched documents (§4.1 control #5, scoped out of M21) | §4.1 |
 
 ---
 
 ## 9. Recommendation
 
-M18, M19, M20, and M21 are complete. The threat this section used to name
-as the highest-severity unaddressed item — §4.1, prompt injection — now has
-a control: untrusted RAG/OCR content is tagged (mechanically, not by asking
-the model to self-report) and refused, not merely confirmed, when it's the
-only thing that could justify a DANGEROUS action.
+M18, M19, M20, M21, and M23 are complete. The threat this section used to
+name as the highest-severity unaddressed item — §4.1, prompt injection —
+now has a control: untrusted RAG/OCR content is tagged (mechanically, not
+by asking the model to self-report) and refused, not merely confirmed, when
+it's the only thing that could justify a DANGEROUS action. §4.1's control
+#5 (ingestion quarantine), the one piece explicitly scoped out of M21,
+landed in M23: folder-watched documents now wait for a human approve/reject
+in the dashboard before entering the corpus at all.
 
 What remains, in rough priority order:
 
-1. **Ingestion quarantine** (§4.1 control #5, explicitly scoped out of
-   M21) — a pending-approval queue so folder-watched documents don't enter
-   the corpus without a human gate on *when*, not just *whether they can
-   originate actions once ingested*.
-2. **Adversarial plugin sandbox testing** (§4.7) — becomes urgent the
+1. **Adversarial plugin sandbox testing** (§4.7) — becomes urgent the
    moment a third-party plugin is installed; not urgent while all plugins
    are first-party.
-3. **Dependency supply chain hygiene** (§4.10) — venv, lockfile, upper
+2. **Dependency supply chain hygiene** (§4.10) — venv, lockfile, upper
    Python bound, `pip-audit` in the loop.
+3. **M22** (§4.9, phone thin client) — still the next *scheduled*
+   milestone; unaffected by M23 landing out of numeric order ahead of it.
 
 An assistant that perceives everything and can act on the host has an
 attack surface that a chatbot does not. M18's controls protect the
