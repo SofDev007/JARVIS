@@ -477,7 +477,7 @@ and executes. The phone should be incapable of leaking what it never has.
 Plus: hardware-backed key (Android Keystore), remote revocation, key expiry
 left **enabled** for the phone (disabled only for the laptop).
 
-### 4.10 Dependency supply chain 🟡
+### 4.10 Dependency supply chain ✅ M25
 
 **Actor:** T8
 
@@ -485,9 +485,42 @@ left **enabled** for the phone (disabled only for the laptop).
 environment. This is how two conflicting OpenCV builds came to be installed
 simultaneously and shadow each other into a broken import.
 
-**Proposed:** a project venv, a lockfile, an upper Python bound, and
-`pip-audit` in the loop. Housekeeping, but it is also the difference between
-a reproducible environment and a machine-specific one.
+**M25 — done, and it found a live recurrence of exactly that bug.**
+Building the lockfile meant actually creating a clean, project-only venv
+(installing straight into this machine's global Python confirmed the
+problem this section warns about: that environment had Django, Flask,
+mysql-connector, a full Jupyter stack, and an unrelated project's package
+installed alongside this one — freezing it would have committed that
+noise as if it were this project's dependency set). Installing cleanly
+surfaced a **second instance of the OpenCV conflict**: `mediapipe>=1.0`
+now hard-requires `opencv-contrib-python`, and `pyproject.toml`'s
+`gesture` extra *also* declared `opencv-python` — installing both put two
+packages providing the same `cv2` import back on disk, the identical
+failure mode as the `opencv-python-headless` conflict M18 Phase 1 fixed,
+just with a different second package this time. Fixed by declaring
+`opencv-contrib-python` instead of `opencv-python` (confirmed: a clean
+install now resolves to exactly one `cv2` provider; full test suite still
+504/506 passing — the same 2 pre-existing unrelated failures as before
+this change).
+
+Also landed: `requires-python = ">=3.10,<3.14"` (there is no CI running
+today despite the CHANGELOG's earlier claim of one — the upper bound was
+chosen to keep the Python actually running this project, 3.13, supported
+rather than retroactively declaring it unsupported); `requirements-lock.txt`
+(exact versions, generated from that clean venv, scoped to
+`[gesture,encryption,keyring,voice,tts,dev]` — `[browser]` and `[semantic]`
+excluded, noted in the file's own header, since neither is used by this
+project's default config and both pull in heavy, mostly-orthogonal
+downloads); one `pip-audit` pass against the clean venv, run ephemerally
+(not added as a permanent dependency) — **no known vulnerabilities**
+across the full locked set.
+
+**Residual:** `requirements-lock.txt` is hand-regenerated (`pip freeze`
+from a fresh venv), not tool-managed (`pip-compile`/`poetry.lock`) — fine
+for now, but it will silently drift stale if a dependency changes and
+nobody remembers to regenerate it. `pip-audit` isn't wired into any
+repeated workflow (no CI exists to run it automatically) — it's a
+one-time signal, not a standing control, until CI exists to make it one.
 
 ---
 
@@ -555,37 +588,40 @@ Revisit the whole document if any of these change:
 | **M21** ✅ | Prompt-injection controls — taint flag from RAG/OCR, untrusted content cannot silently originate actions, structural delimiting | §4.1, B3 |
 | **M23** ✅ | Ingestion quarantine — pending-approval queue for folder-watched documents, dashboard approve/reject panel (§4.1 control #5, scoped out of M21) | §4.1 |
 | **M24** ✅ | Adversarial plugin sandbox suite — env-var allowlist (closed a real secret-leak path), always-tree-kill on close (closed a real orphaned-descendant leak) | §4.7 |
-| **Unscheduled** | venv + lockfile + `pip-audit`; OS-level plugin sandboxing (seccomp/containers) | §4.10, §4.7 residual |
+| **M25** ✅ | Dependency supply chain — clean-venv lockfile, upper Python bound, one `pip-audit` pass (clean, no CVEs), a *second* live OpenCV-conflict instance found and fixed | §4.10 |
+| **Unscheduled** | OS-level plugin sandboxing (seccomp/containers) | §4.7 residual |
 
 ---
 
 ## 9. Recommendation
 
-M18, M19, M20, M21, M23, and M24 are complete. The threat this section used
-to name as the highest-severity unaddressed item — §4.1, prompt injection —
-now has a control: untrusted RAG/OCR content is tagged (mechanically, not
-by asking the model to self-report) and refused, not merely confirmed, when
-it's the only thing that could justify a DANGEROUS action. §4.1's control
-#5 (ingestion quarantine), the one piece explicitly scoped out of M21,
-landed in M23: folder-watched documents now wait for a human approve/reject
-in the dashboard before entering the corpus at all. M24 red-teamed the
-plugin sandbox instead of only functionally testing it, and the two real
-findings it surfaced (an env-var secret leak, an orphaned-descendant-
-process leak) are both fixed — the sandbox is more honest about what it
-contains now than it was assumed to be.
+M18, M19, M20, M21, M23, M24, and M25 are complete. The threat this section
+used to name as the highest-severity unaddressed item — §4.1, prompt
+injection — now has a control: untrusted RAG/OCR content is tagged
+(mechanically, not by asking the model to self-report) and refused, not
+merely confirmed, when it's the only thing that could justify a DANGEROUS
+action. §4.1's control #5 (ingestion quarantine), the one piece explicitly
+scoped out of M21, landed in M23: folder-watched documents now wait for a
+human approve/reject in the dashboard before entering the corpus at all.
+M24 red-teamed the plugin sandbox instead of only functionally testing it,
+and the two real findings it surfaced (an env-var secret leak, an
+orphaned-descendant-process leak) are both fixed. M25 built the lockfile
+the honest way — a clean venv, not the machine's shared global Python —
+and that process itself caught a *second* live instance of the exact
+OpenCV-conflict bug M18 Phase 1 fixed, now also closed.
 
-What remains, in rough priority order:
+What remains:
 
-1. **Dependency supply chain hygiene** (§4.10) — venv, lockfile, upper
-   Python bound, `pip-audit` in the loop.
-2. **OS-level plugin sandboxing** (§4.7 residual) — seccomp/containers;
+1. **OS-level plugin sandboxing** (§4.7 residual) — seccomp/containers;
    the actual fix for filesystem/network/resource containment, which the
    subprocess boundary never claimed to provide. Not urgent while all
    plugins are first-party; becomes urgent the moment a third-party one
    is installed.
-3. **M22** (§4.9, phone thin client) — still the next *scheduled*
-   milestone; unaffected by M23/M24 landing out of numeric order ahead of
-   it.
+2. **M22** (§4.9, phone thin client) — the next *scheduled* milestone;
+   unaffected by M23/M24/M25 landing out of numeric order ahead of it.
+3. **Keeping `requirements-lock.txt` current** (§4.10 residual) — it's
+   hand-regenerated, not tool-managed, and there's no CI to catch drift
+   automatically.
 
 An assistant that perceives everything and can act on the host has an
 attack surface that a chatbot does not. M18's controls protect the

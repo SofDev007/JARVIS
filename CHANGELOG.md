@@ -3,6 +3,39 @@
 All notable changes to the Digital Twin AI Assistant.
 Format follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased] — Milestone 25: Dependency supply chain hygiene
+
+### Added
+- **`requirements-lock.txt`**: exact-version dependency lock, generated
+  from a clean, project-only venv (deliberately *not* frozen from this
+  machine's shared global Python — see the file's own header for why:
+  that environment had Django, Flask, mysql-connector, a Jupyter stack,
+  and an unrelated project's package installed alongside this one).
+  Scoped to `[gesture,encryption,keyring,voice,tts,dev]`; `[browser]` and
+  `[semantic]` excluded (heavy, orthogonal, not used by default config)
+  and noted as such in the file.
+- `requires-python = ">=3.10,<3.14"` in `pyproject.toml` (was unbounded).
+  No CI actually exists in this repo despite an earlier CHANGELOG entry
+  claiming one — the bound was chosen to keep the Python version that
+  ran this milestone's own test suite (3.13) supported, not to match a
+  CI matrix that isn't there.
+- One `pip-audit` pass against the clean lock venv (ephemeral — not
+  added as a project dependency): no known vulnerabilities found across
+  the full locked set.
+
+### Fixed / Security
+- **A second live instance of the OpenCV conflict M18 Phase 1 fixed.**
+  Building the lockfile in a real clean venv (instead of trusting the
+  polluted global one) surfaced that `mediapipe>=1.0` now hard-requires
+  `opencv-contrib-python`, while `pyproject.toml`'s `gesture` extra also
+  declared `opencv-python` — installing both put two packages providing
+  the same `cv2` import on disk again, just with `-contrib-` instead of
+  `-headless` this time. Fixed by declaring `opencv-contrib-python`
+  instead of `opencv-python` in both `pyproject.toml` and
+  `requirements.txt`; confirmed a clean install now resolves to exactly
+  one `cv2` provider, and the full test suite (504/506, same 2
+  pre-existing unrelated failures) still passes under it.
+
 ## [Unreleased] — Milestone 24: Adversarial plugin sandbox suite
 
 ### Added
