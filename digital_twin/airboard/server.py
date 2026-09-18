@@ -45,7 +45,8 @@ Endpoints::
     GET  /tree?orb=N             a notes-orb folder tree, .md only, jailed
     GET  /note?f=N/<rel>         one note's raw text, jailed, .md only
     GET  /props                  media airlock as a browsable tree
-    GET  /orb                    agent's live state (the ring reads this)
+    GET  /orb                    the blob's state {state, mood[, wave]}: live
+                                  from the kernel bus, else the agent's files
 """
 
 from __future__ import annotations
@@ -129,10 +130,12 @@ class AirboardServer:
         state_timeout_s: int,
         allow_remote: bool = False,
         on_perception: PerceptionCallback | None = None,
+        orb_source: Callable[[], dict] | None = None,
     ):
         self._name = name
         self._allow_remote = allow_remote
         self._on_perception = on_perception
+        self._orb_source = orb_source
         self._orbs = orbs
         self._media_root = compute_media_root(orbs, media_dir)
         self._media_root.mkdir(parents=True, exist_ok=True)
@@ -383,6 +386,19 @@ class AirboardServer:
         return {"items": items, "dirs": dirs}
 
     def _orb_view(self) -> dict:
+        """The blob's state. The kernel's live bus-derived state wins when
+        active; the agent-written state files remain the fallback."""
+        out = self._file_orb_view()
+        live = self._orb_source() if self._orb_source is not None else {}
+        if live.get("state", "idle") != "idle":
+            out["state"] = live["state"]
+            if live["state"] != "speaking":
+                out.pop("wave", None)
+        if live.get("mood", "green") != "green":
+            out["mood"] = live["mood"]
+        return out
+
+    def _file_orb_view(self) -> dict:
         out: dict = {"state": "idle", "mood": "green"}
         now = time.time()
         try:

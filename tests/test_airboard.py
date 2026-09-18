@@ -5,6 +5,7 @@ root must be rejected, never served."""
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -15,7 +16,7 @@ from digital_twin.airboard.orbs import Orb
 from digital_twin.airboard.server import AirboardServer, parse_perception
 from digital_twin.configuration.settings import AirboardConfig
 from digital_twin.core.bus import EventBus
-from digital_twin.core.events import Topics
+from digital_twin.core.events import Event, Topics
 
 
 def _get(port: int, path: str, headers: dict | None = None):
@@ -342,3 +343,52 @@ def test_http_heartbeat_reaches_the_bus(bus, board):
     assert status == 200
     bus.flush(timeout=2.0)
     assert [(e.payload["hand"], e.payload["gesture"]) for e in events] == [("left", "rock")]
+
+
+# ---------------------------------------------------------------------------
+# The blob's presence state: bus events -> /orb
+# ---------------------------------------------------------------------------
+def _pub(bus, topic, **payload):
+    bus.publish(Event(topic=topic, source="test", payload=payload))
+    bus.flush(timeout=2.0)
+
+
+def test_orb_follows_the_conversation(bus, board):
+    assert board.orb_view() == {"state": "idle", "mood": "green"}
+    _pub(bus, Topics.VOICE_CONTROL, command="start")
+    assert board.orb_view()["state"] == "listening"
+    _pub(bus, Topics.VOICE, text="what time is it")
+    assert board.orb_view()["state"] == "thinking"
+    _pub(bus, Topics.CHAT_RESPONSE, text="Half past three.")
+    assert board.orb_view()["state"] == "speaking"
+
+
+def test_orb_states_expire_to_idle(bus, board):
+    _pub(bus, Topics.CHAT_RESPONSE, text="x" * 30)          # ~2 s of speech
+    assert board.orb_view(now=time.time() + 1.0)["state"] == "speaking"
+    assert board.orb_view(now=time.time() + 60.0)["state"] == "idle"
+
+
+def test_orb_stop_clears_listening_only(bus, board):
+    _pub(bus, Topics.VOICE_CONTROL, command="start")
+    _pub(bus, Topics.VOICE_CONTROL, command="stop")
+    assert board.orb_view()["state"] == "idle"
+    _pub(bus, Topics.VOICE, text="hi")
+    _pub(bus, Topics.VOICE_CONTROL, command="stop")
+    assert board.orb_view()["state"] == "thinking"
+
+
+@pytest.mark.parametrize("status, mood", [
+    ("failed", "red"), ("denied", "amber"), ("rejected", "amber"), ("executed", "green")])
+def test_orb_mood_from_action_results(bus, board, status, mood):
+    _pub(bus, Topics.ACTION_RESULT, action="x", status=status)
+    assert board.orb_view()["mood"] == mood
+    assert board.orb_view(now=time.time() + 60.0)["mood"] == "green"
+
+
+def test_orb_endpoint_prefers_live_state_over_files(bus, board, tmp_path):
+    state_dir = tmp_path / "state"
+    (state_dir / "state").write_text("listening")            # external agent
+    assert json.loads(_get(board.port, "/orb")[1])["state"] == "listening"
+    _pub(bus, Topics.CHAT_RESPONSE, text="Hello there.")
+    assert json.loads(_get(board.port, "/orb")[1])["state"] == "speaking"

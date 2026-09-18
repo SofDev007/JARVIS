@@ -82,6 +82,16 @@ SPDX-License-Identifier: MIT
                    border:none; box-shadow:none; backdrop-filter:none; }
   .card.ringcard canvas { display:block; width:440px; height:440px;
                           pointer-events:none; }
+  /* the blob's state caption: sentence case, quiet, readable on video */
+  .card.ringcard .blobcap { position:absolute; left:0; right:0; bottom:64px;
+      text-align:center; font:500 17px/1.2 system-ui, "Segoe UI", sans-serif;
+      letter-spacing:0.01em; color:#E0F7FF; pointer-events:none;
+      text-shadow:0 1px 2px rgba(2,12,20,0.95), 0 0 6px rgba(2,12,20,0.85),
+                  0 0 14px rgba(56,189,248,0.45); }
+  /* no WebGL2: a still CSS droplet in the same palette */
+  .card.ringcard.blob-fallback canvas { border-radius:50%;
+      background:radial-gradient(circle at 38% 34%, rgba(224,247,255,0.55),
+        rgba(125,211,252,0.12) 42%, rgba(56,189,248,0.35) 68%, transparent 70%); }
   body:not(.on-air) .card.ringcard, .card.ringcard.grabbed,
   body.on-air .card.ringcard {
       box-shadow:none; border:none; background:transparent; }
@@ -431,56 +441,176 @@ function summonWidget(w) {
   return makeRing();
 }
 
-// ---- THE RING — the assistant's presence as a grabbable power-core
-// ring: concentric glass rings, tick ring, wordmark core. BOTH pages
-// animate it LOCALLY from /orb (the assistant's state files) on
-// wall-clock phases — tracker and overlay pulse as one; only
-// position/scale/rotation travel the bus. States: idle breath ·
-// listening (deep blue, pulses draw INWARD — blue = the human
-// talking) · thinking (radar sweep) · speaking (the live waveform
-// drives glow/thickness/core through an auto-gain). Moods tint the
-// whole ring red/amber.
+// ---- THE BLOB — the assistant's presence: a rotating drop of glacial
+// meltwater. Clear at the centre so the camera shows through; light
+// gathers at the fresnel rim and in slow internal bands. BOTH pages
+// animate it LOCALLY from /orb; only position/scale/rotation travel the
+// bus. One meaning per state:
+//   idle      slow breathing
+//   listening surface quickens, rim brightens (attending to you)
+//   thinking  the inner bands swirl
+//   speaking  the surface ripples with the voice amplitude
+// Moods tint the rim only: amber (declined), red (failed). All state
+// parameters ease (~300 ms); prefers-reduced-motion freezes the motion
+// and leaves only rim brightness to carry state.
 const RING = {
   data: { state: "idle", mood: "green", wave: null }, amp: 0, gmax: 1,
   live: 0,
-  // palette eyedropped from the design reference (exact reference
-  // colors, SUBTLE state shifts — a deep-blue listening state was
-  // unreadable and died)
-  COLS: { idle: [140, 235, 240], listening: [120, 205, 250],
-          thinking: [170, 245, 250], speaking: [140, 235, 240] },
-  MOODT: { red: [255, 82, 82], amber: [255, 179, 71], green: null },
+  // per-state targets: breath, ripple speed, swirl, rim gain
+  STATES: {
+    idle:      { breath: 1.0, ripple: 0.6, swirl: 0.0, rim: 0.15 },
+    listening: { breath: 0.4, ripple: 1.8, swirl: 0.0, rim: 1.0 },
+    thinking:  { breath: 0.3, ripple: 0.9, swirl: 1.0, rim: 0.5 },
+    speaking:  { breath: 0.0, ripple: 1.2, swirl: 0.2, rim: 0.6 },
+  },
+  MOODT: { red: [0.973, 0.443, 0.443], amber: [0.984, 0.749, 0.141] },
+  LABEL: { listening: "Listening", thinking: "Thinking", speaking: "Speaking" },
 };
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)");
 setInterval(async () => {
-  if (!RING.live) return;               // poll only while a ring is up
+  if (!RING.live) return;               // poll only while a blob is up
   try {
     const r = await fetch("/orb", { cache: "no-store" });
     if (r.ok) RING.data = await r.json();
   } catch (e) {}
 }, 120);
 
-function ringAmp() {
-  // the preserved aura pulse math: RMS+peak blend, auto-gain against a
-  // rolling ceiling, contrast-expanded, fast attack / musical decay
+function ringAmp(t) {
+  // RMS+peak blend, auto-gain against a rolling ceiling, fast attack /
+  // musical decay. Without a live waveform (TTS publishes none), a
+  // speech-like syllable envelope stands in.
   const d = RING.data;
+  const wave = d.wave && (d.wave.samples || d.wave);
   let target = 0;
-  if (d.state === "speaking" && d.wave && d.wave.length) {
-    let s = 0, pk = 0;
-    for (const v of d.wave) { s += v * v; pk = Math.max(pk, Math.abs(v)); }
-    const raw = 0.6 * Math.sqrt(s / d.wave.length) + 0.4 * pk;
-    RING.gmax = Math.max(raw, (RING.gmax || 1) * 0.995);
-    target = Math.pow(Math.min(1, raw / Math.max(3, RING.gmax)), 2.2);
+  if (d.state === "speaking") {
+    if (wave && wave.length) {
+      let s = 0, pk = 0;
+      for (const v of wave) { s += v * v; pk = Math.max(pk, Math.abs(v)); }
+      const raw = 0.6 * Math.sqrt(s / wave.length) + 0.4 * pk;
+      RING.gmax = Math.max(raw, (RING.gmax || 1) * 0.995);
+      target = Math.pow(Math.min(1, raw / Math.max(3, RING.gmax)), 2.2);
+    } else {
+      target = 0.35 + 0.3 * Math.abs(Math.sin(t * 7.3) * Math.sin(t * 2.9));
+    }
   }
   RING.amp += (target - RING.amp) * (target > RING.amp ? 0.6 : 0.2);
   return RING.amp;
 }
 
-const RINGS = new Map();      // this page's ring canvases: item id -> sc
+const RINGS = new Map();      // this page's blob canvases: item id -> sc
+
+const BLOB_VS = `#version 300 es
+in vec2 aPos; out vec2 vP;
+void main() { vP = aPos; gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+const BLOB_FS = `#version 300 es
+precision highp float;
+in vec2 vP; out vec4 o;
+uniform float uSpin, uRip, uSwirl, uBreath, uAmp, uRim, uTap, uTintMix;
+uniform vec3 uTint;
+// 3D simplex noise (Ashima Arts / Stefan Gustavson, MIT)
+vec3 m289(vec3 x){return x-floor(x*(1./289.))*289.;}
+vec4 m289(vec4 x){return x-floor(x*(1./289.))*289.;}
+vec4 perm(vec4 x){return m289(((x*34.)+1.)*x);}
+vec4 tis(vec4 r){return 1.79284291400159-0.85373472095314*r;}
+float snoise(vec3 v){
+  const vec2 C=vec2(1./6.,1./3.); const vec4 D=vec4(0.,.5,1.,2.);
+  vec3 i=floor(v+dot(v,C.yyy)); vec3 x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz); vec3 l=1.-g;
+  vec3 i1=min(g.xyz,l.zxy); vec3 i2=max(g.xyz,l.zxy);
+  vec3 x1=x0-i1+C.xxx; vec3 x2=x0-i2+C.yyy; vec3 x3=x0-D.yyy;
+  i=m289(i);
+  vec4 p=perm(perm(perm(i.z+vec4(0.,i1.z,i2.z,1.))+i.y+vec4(0.,i1.y,i2.y,1.))+i.x+vec4(0.,i1.x,i2.x,1.));
+  vec3 ns=.142857142857*D.wyz-D.xzx;
+  vec4 j=p-49.*floor(p*ns.z*ns.z);
+  vec4 x_=floor(j*ns.z); vec4 y_=floor(j-7.*x_);
+  vec4 x=x_*ns.x+ns.yyyy; vec4 y=y_*ns.x+ns.yyyy; vec4 h=1.-abs(x)-abs(y);
+  vec4 b0=vec4(x.xy,y.xy); vec4 b1=vec4(x.zw,y.zw);
+  vec4 s0=floor(b0)*2.+1.; vec4 s1=floor(b1)*2.+1.; vec4 sh=-step(h,vec4(0.));
+  vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy; vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+  vec3 p0=vec3(a0.xy,h.x); vec3 p1=vec3(a0.zw,h.y);
+  vec3 p2=vec3(a1.xy,h.z); vec3 p3=vec3(a1.zw,h.w);
+  vec4 nm=tis(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+  p0*=nm.x; p1*=nm.y; p2*=nm.z; p3*=nm.w;
+  vec4 m=max(.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.); m=m*m;
+  return 42.*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+}
+mat3 spin(float a){ float c=cos(a), s=sin(a);      // Y spin, fixed 20deg tilt
+  mat3 y=mat3(c,0.,-s, 0.,1.,0., s,0.,c);
+  return y*mat3(1.,0.,0., 0.,.94,.34, 0.,-.34,.94); }
+void main(){
+  const vec3 HI=vec3(.878,.969,1.), ICE=vec3(.490,.827,.988),
+             DEEP=vec3(.220,.741,.973);
+  mat3 R=spin(uSpin);
+  float d=length(vP);
+  vec2 dir=d>1e-4?vP/d:vec2(0.,1.);
+  // the silhouette wobbles with noise that turns with the body
+  float wob=snoise(R*vec3(dir,0.)*1.5+vec3(0.,0.,uRip));
+  float r=.60*(1.+.03*uBreath+.07*uAmp)*(1.+(.05+.09*uAmp)*wob);
+  float aa=fwidth(d)*1.5;
+  float inside=1.-smoothstep(r-aa,r+aa,d);
+  float q=min(d/r,1.), z=sqrt(max(0.,1.-q*q));
+  vec3 n=vec3(vP/r,z), sp=R*n;
+  float fres=pow(1.-z,2.4);
+  float band=smoothstep(.3,.95,snoise(sp*2.1+vec3(uSwirl)));
+  vec3 rimCol=mix(HI,uTint,uTintMix);
+  vec3 col=mix(DEEP,ICE,z);
+  col=mix(col,HI,band*.55);
+  col=mix(col,uTint,uTintMix*.2);           // moods warm the body, rim carries them
+  col=mix(col,rimCol,fres);
+  float spec=pow(max(0.,dot(n,normalize(vec3(-.45,.55,.7)))),48.);
+  // body .32: reads light blue even over saturated video, still clear
+  float a=(.32+.22*band*z+fres*(.55+.45*uRim+.4*uTap)+spec*.6)*inside;
+  col+=spec*.7;
+  float halo=exp(-max(0.,d-r)*8.)*(.2+.3*uRim+.3*uAmp+.4*uTap)*(1.-inside);
+  vec3 hc=mix(DEEP,uTint,uTintMix);
+  o=vec4(col*a+hc*halo, a+halo*.7);        // premultiplied alpha
+}`;
+
+function blobProgram(gl) {
+  const sh = (type, src) => {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  };
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, BLOB_VS));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, BLOB_FS));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  gl.useProgram(p);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(p, "aPos");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const u = {};
+  for (const k of ["uSpin", "uRip", "uSwirl", "uBreath", "uAmp", "uRim",
+                   "uTap", "uTintMix", "uTint"]) u[k] = gl.getUniformLocation(p, k);
+  return u;
+}
 
 function ringCanvas(el) {
   const canvas = el.querySelector("canvas");
+  let cap = el.querySelector(".blobcap");
+  if (!cap) {
+    cap = document.createElement("div");
+    cap.className = "blobcap";
+    cap.setAttribute("role", "status");
+    el.appendChild(cap);
+  }
   const RES = Math.min(devicePixelRatio || 1, 2);
   canvas.width = 440 * RES; canvas.height = 440 * RES;
-  return { canvas, ctx: canvas.getContext("2d"), RES, tapT: 0 };
+  const sc = { canvas, cap, RES, tapT: 0, last: performance.now(),
+               cur: { ...RING.STATES.idle, tint: 0 }, tint: [0.878, 0.969, 1],
+               spin: 0, rip: 0, swirl: 0 };
+  try {
+    sc.gl = canvas.getContext("webgl2", { premultipliedAlpha: true, alpha: true,
+                                          antialias: false });
+    if (sc.gl) sc.u = blobProgram(sc.gl);
+  } catch (e) { console.warn("blob: WebGL2 unavailable", e); sc.gl = null; }
+  if (!sc.u) el.classList.add("blob-fallback");   // static CSS droplet
+  return sc;
 }
 
 function makeRing() {
@@ -499,9 +629,8 @@ function makeRing() {
 }
 
 function ensureRingRes(sc) {
-  // the models' adaptive-resolution law, for the ring (round 4, Jared's
-  // pixelation catch on stretch): re-rez on settle only — never mid-
-  // grip — 25% hysteresis, 2048 cap, never below the 440 base
+  // adaptive resolution on settle only — never mid-grip — 25%
+  // hysteresis, 2048 cap, never below the 440 base
   if (sc.held) return;
   const want = Math.round(Math.min(2048, Math.max(440,
     440 * (devicePixelRatio || 1) * SS * (sc.scale || 1))));
@@ -511,106 +640,50 @@ function ensureRingRes(sc) {
 }
 
 function drawRing(sc) {
-  // NO spin — the ring is still; ONE solid thick band + solid hot
-  // rim; SPEAKING = the band pulses HOT WHITE on the live voice.
-  // Core is CLEAR glass, wordmark + status sized to fill it.
-  const d = RING.data, st = d.state || "idle";
-  const amp = st === "speaking" ? ringAmp() : (RING.amp *= 0.9);
-  const t = Date.now() / 1000;          // wall clock: pages in sync
-  const base = RING.COLS[st] || RING.COLS.idle;
-  const tint = RING.MOODT[d.mood];
-  const c = tint ? base.map((v, i) => Math.round(v * 0.35 + tint[i] * 0.65))
-                 : base;
-  // v4: SPEAKING = the band burns toward HOT WHITE on the live voice
-  const wp = st === "speaking" ? amp : 0;
-  const bc = c.map((v, i) => Math.round(v + ([235, 250, 252][i] - v) * wp));
-  const col = a => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
-  const band = a => `rgba(${bc[0]},${bc[1]},${bc[2]},${a})`;
-  const hot = a => `rgba(228,250,252,${a})`;    // the white-hot rim
-  const x = sc.ctx;
-  ensureRingRes(sc);                    // the pixelation fix (round 4)
+  const d = RING.data, st = RING.STATES[d.state] ? d.state : "idle";
+  const now = performance.now();
+  const dt = Math.min((now - sc.last) / 1000, 0.1); sc.last = now;
+  const t = Date.now() / 1000;
+  const still = REDUCED.matches;
+  const amp = st === "speaking" && !still ? ringAmp(t) : (RING.amp *= 0.9);
+  // ease every state parameter toward its target (~300 ms)
+  const k = 1 - Math.exp(-dt / 0.1);
+  const tgt = RING.STATES[st];
+  for (const p in tgt) sc.cur[p] += (tgt[p] - sc.cur[p]) * k;
+  const mood = RING.MOODT[d.mood];
+  sc.cur.tint += ((mood ? 0.75 : 0) - sc.cur.tint) * k;
+  if (mood) sc.tint = mood;
+  if (!still) {                         // phases accumulate: no jumps
+    sc.spin += dt * 0.35;
+    sc.rip += dt * sc.cur.ripple * 0.4;
+    sc.swirl += dt * (0.08 + sc.cur.swirl * 0.9);
+  }
+  const breath = still ? 0 : sc.cur.breath * Math.sin(t * Math.PI / 2);  // 4 s
   const tap = Math.exp(-Math.max(0, t - sc.tapT) * 4);
-  const breath = 0.9 + 0.1 * Math.sin(t * 1.4);
-  const glow = (10 + wp * 34 + tap * 14) * breath;
-  x.setTransform(sc.RES, 0, 0, sc.RES, 0, 0);
-  x.clearRect(0, 0, 440, 440);
-  x.save();
-  x.translate(220, 220);
-  x.shadowColor = band(0.95);
-  // THE BAND — ONE solid piece, perfectly still — it PULSES HOT
-  // WHITE while the assistant speaks, riding the live waveform
-  x.shadowBlur = glow + 8;
-  x.strokeStyle = band(0.92);
-  x.lineWidth = 20 + wp * 3;
-  x.beginPath(); x.arc(0, 0, 178, 0, 7); x.stroke();
-  // solid hot rim + inner thin ring
-  x.shadowBlur = 6 + wp * 14;
-  x.strokeStyle = hot(0.85); x.lineWidth = 2.5;
-  x.beginPath(); x.arc(0, 0, 191, 0, 7); x.stroke();
-  x.shadowBlur = 6;
-  x.strokeStyle = col(0.5); x.lineWidth = 1.5;
-  x.beginPath(); x.arc(0, 0, 165, 0, 7); x.stroke();
-  // tick ring (static chrome)
-  x.shadowBlur = 0;
-  for (let i = 0; i < 48; i++) {
-    const a = i / 48 * Math.PI * 2;
-    const big = i % 4 === 0;
-    x.strokeStyle = col(big ? 0.6 : 0.3);
-    x.lineWidth = big ? 2 : 1.2;
-    x.beginPath();
-    x.moveTo(Math.cos(a) * (big ? 148 : 152), Math.sin(a) * (big ? 148 : 152));
-    x.lineTo(Math.cos(a) * 158, Math.sin(a) * 158);
-    x.stroke();
-  }
-  // state FX in the band between ticks and core
-  if (st === "listening") {             // pulses draw INWARD: receiving
-    for (let k = 0; k < 3; k++) {
-      const p = (t * 0.7 + k / 3) % 1;
-      x.globalAlpha = (1 - p) * p * 1.8;
-      x.strokeStyle = col(0.9); x.lineWidth = 2;
-      x.beginPath(); x.arc(0, 0, 158 - p * 60, 0, 7); x.stroke();
-    }
-    x.globalAlpha = 1;
-  } else if (st === "thinking") {       // radar sweep with a fading tail
-    const a0 = t * 2.8;
-    for (let i = 0; i < 7; i++) {
-      x.globalAlpha = 0.55 * (1 - i / 7);
-      x.strokeStyle = col(0.95); x.lineWidth = 10; x.shadowBlur = 12;
-      x.beginPath();
-      x.arc(0, 0, 148, a0 - (i + 1) * 0.11, a0 - i * 0.11); x.stroke();
-    }
-    x.globalAlpha = 1; x.shadowBlur = 0;
-  }
-  // THE CORE — CLEAR glass (round 4: the dark overlay died) — just the
-  // rims; the video breathes through the center
-  x.shadowBlur = glow;
-  x.strokeStyle = col(0.9); x.lineWidth = 2.5 + wp * 2;
-  x.beginPath(); x.arc(0, 0, 128, 0, 7); x.stroke();
-  x.shadowBlur = 0;
-  x.strokeStyle = col(0.3); x.lineWidth = 1;
-  x.beginPath(); x.arc(0, 0, 119, 0, 7); x.stroke();
-  // wordmark + status — sized UP (round 4: the clear core has room);
-  // dark halo shadow keeps them readable over live video
-  x.shadowColor = "rgba(2,10,10,0.9)"; x.shadowBlur = 7;
-  x.fillStyle = `rgba(235,250,250,${0.94 + wp * 0.06})`;
-  const nm = (CFG.name || "JARVIS").toUpperCase();
-  const fpx = nm.length <= 6 ? 27 : nm.length <= 9 ? 20 : 14;
-  x.font = `700 ${fpx}px 'SF Mono', Menlo, monospace`;
-  x.textAlign = "center"; x.textBaseline = "middle";
-  x.fillText(nm.split("").join(".") + ".", 0, -12);
-  x.globalAlpha = 0.85;
-  x.fillStyle = col(0.98);
-  x.font = "600 14px 'SF Mono', Menlo, monospace";
-  const status = { idle: "ACTIVE", listening: "LISTENING",
-                   thinking: "THINKING", speaking: "SPEAKING" }[st];
-  x.fillText((status || "ACTIVE").split("").join(" "), 0, 28);
-  x.shadowBlur = 0; x.globalAlpha = 1;
-  x.restore();
+
+  const label = RING.LABEL[st] || (CFG.name || "JARVIS");
+  if (sc.cap.textContent !== label) sc.cap.textContent = label;
+
+  const gl = sc.gl;
+  if (!sc.u) return;
+  ensureRingRes(sc);
+  gl.viewport(0, 0, sc.canvas.width, sc.canvas.height);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  const u = sc.u;
+  gl.uniform1f(u.uSpin, sc.spin); gl.uniform1f(u.uRip, sc.rip);
+  gl.uniform1f(u.uSwirl, sc.swirl); gl.uniform1f(u.uBreath, breath);
+  gl.uniform1f(u.uAmp, amp); gl.uniform1f(u.uRim, sc.cur.rim);
+  gl.uniform1f(u.uTap, tap); gl.uniform1f(u.uTintMix, sc.cur.tint);
+  gl.uniform3fv(u.uTint, sc.tint);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
 function renderRings() {
   RINGS.forEach((sc, id) => {
-    if (!sc.canvas.isConnected) { RINGS.delete(id); return; }
+    if (!sc.canvas.isConnected) {       // free the GPU context with the card
+      if (sc.gl) sc.gl.getExtension("WEBGL_lose_context")?.loseContext();
+      RINGS.delete(id); return;
+    }
     // feed scale + grip for the adaptive re-rez (tracker side; the
     // render page feeds these from the bus in renderLoop)
     const holder = items.find(k => k.id === id);

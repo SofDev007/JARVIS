@@ -32,6 +32,18 @@ logger = logging.getLogger(__name__)
 #: frame starts from a clean slate so a held gesture fires afresh.
 _STALE_S = 1.0
 
+# The blob's presence state, derived from the bus. No topic says "done
+# listening/thinking/speaking", so each state simply expires.
+_LISTEN_S = 8.0
+_THINK_S = 30.0
+_MOOD_S = 45.0
+_MOODS = {"failed": "red", "denied": "amber", "rejected": "amber"}
+
+
+def _speaking_seconds(text: str) -> float:
+    """Rough TTS duration: ~15 characters per second, 1.5–20 s."""
+    return max(1.5, min(20.0, len(text) / 15.0))
+
 
 class AirboardModule(BaseModule):
     """Serve the gesture-controlled overlay board and publish its gestures."""
@@ -50,6 +62,9 @@ class AirboardModule(BaseModule):
         self._present: set[str] = set()
         self._last_gesture: dict[str, tuple[str, float]] = {}
         self._last_seen = 0.0
+        self._orb = ("idle", 0.0)        # (state, expires_at)
+        self._mood = ("green", 0.0)
+        self._subscriptions: list = []
 
     @property
     def port(self) -> int:
@@ -69,10 +84,26 @@ class AirboardModule(BaseModule):
             state_timeout_s=self._config.state_timeout_s,
             allow_remote=self._config.allow_remote,
             on_perception=self.on_perception,
+            orb_source=self.orb_view,
         )
         self._server.start()
+        sub = self._bus.subscribe
+        self._subscriptions = [
+            sub(Topics.VOICE_CONTROL, self._on_voice_control, name="airboard.orb"),
+            sub(Topics.VOICE_PARTIAL, lambda e: self._set_orb("listening", _LISTEN_S),
+                name="airboard.orb"),
+            sub(Topics.VOICE, lambda e: self._set_orb("thinking", _THINK_S),
+                name="airboard.orb"),
+            sub(Topics.CHAT, lambda e: self._set_orb("thinking", _THINK_S),
+                name="airboard.orb"),
+            sub(Topics.CHAT_RESPONSE, self._on_reply, name="airboard.orb"),
+            sub(Topics.ACTION_RESULT, self._on_action_result, name="airboard.orb"),
+        ]
 
     def _on_stop(self) -> None:
+        for subscription in self._subscriptions:
+            subscription.cancel()
+        self._subscriptions = []
         if self._server is not None:
             self._server.stop()
             self._server = None
@@ -85,6 +116,35 @@ class AirboardModule(BaseModule):
 
     def _on_resume(self) -> None:
         self._on_start()
+
+    # ------------------------------------------------------------------
+    # Bus -> the blob's presence state (served on /orb)
+    # ------------------------------------------------------------------
+    def _set_orb(self, state: str, seconds: float) -> None:
+        self._orb = (state, time.time() + seconds)
+
+    def _on_voice_control(self, event: Event) -> None:
+        command = event.payload.get("command")
+        if command in ("start", "toggle"):
+            self._set_orb("listening", _LISTEN_S)
+        elif command == "stop" and self._orb[0] == "listening":
+            self._set_orb("idle", 0.0)
+
+    def _on_reply(self, event: Event) -> None:
+        self._set_orb("speaking", _speaking_seconds(str(event.payload.get("text") or "")))
+
+    def _on_action_result(self, event: Event) -> None:
+        mood = _MOODS.get(event.payload.get("status"))
+        if mood:
+            self._mood = (mood, time.time() + _MOOD_S)
+
+    def orb_view(self, now: float | None = None) -> dict:
+        """``{state, mood}`` with expired states decayed to idle/green."""
+        now = time.time() if now is None else now
+        state, until = self._orb
+        mood, mood_until = self._mood
+        return {"state": state if now < until else "idle",
+                "mood": mood if now < mood_until else "green"}
 
     # ------------------------------------------------------------------
     # Heartbeat -> bus events
