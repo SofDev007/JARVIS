@@ -164,6 +164,19 @@ dashboard:
   # dashboard instead of the terminal — this resolves the stdin conflict
   # between console chat and console confirmation prompts.
 
+airboard:
+  enabled: false               # gesture-controlled overlay board (off by default)
+  host: 127.0.0.1              # loopback only unless allow_remote: true
+  port: 8794                   # http://127.0.0.1:8794 (0 = ephemeral)
+  allow_remote: false          # binding beyond loopback is an explicit act
+  name: JARVIS                  # shown in the page UI
+  state_timeout_s: 600          # a stale agent state decays to idle after this
+  state_dir: data/airboard/state
+  media_dir: data/airboard/media
+  # Notes/media orb paths are personal filesystem locations, so they live
+  # outside this tracked file — see orbs_file (gitignored) below.
+  orbs_file: config/airboard.local.yaml
+
 knowledge:
   enabled: true                # local RAG: ingest -> chunk -> embed -> recall
   db_path: data/knowledge.db

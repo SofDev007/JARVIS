@@ -246,6 +246,12 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
         ))
         logger.info("Dashboard will listen on http://%s:%s",
                     config.dashboard.host, config.dashboard.port)
+    if config.airboard.enabled:
+        from digital_twin.airboard.module import AirboardModule
+
+        registry.register(AirboardModule(config.airboard))
+        logger.info("Air board will listen on http://%s:%s",
+                    config.airboard.host, config.airboard.port)
     if config.planner.enabled and config.automation.enabled:
         from digital_twin.planner.module import PlannerModule
 

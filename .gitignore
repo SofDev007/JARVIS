@@ -20,6 +20,7 @@ dist/
 *.dpapi
 secrets/
 data/
+config/airboard.local.yaml
 
 # model weights (fetched, not tracked)
 models/
