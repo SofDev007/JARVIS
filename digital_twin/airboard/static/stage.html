@@ -281,6 +281,13 @@ setTimeout(function () {
 <script type="module">
 import { HandLandmarker, FilesetResolver } from
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { GestureEngine, fromMediaPipe } from "/gestures.js";
+
+// Named gestures (thumbs_up, peace, ...) for JARVIS: recomputed every
+// tracker frame, shipped on the /state heartbeat, turned into bus events
+// by the Python module. Independent of the board verbs below.
+const gestureEngine = new GestureEngine();
+const NAMED = { hands: [], gestures: [] };
 
 // modes: ?mode=mirror (default, self-view) | overlay (transparent — OBS
 // browser sources can't open cameras reliably on macOS, kept for browsers
@@ -2746,6 +2753,21 @@ async function boot() {
       });
       Object.keys(cursors).map(Number).forEach(i => { if (!seen.has(i)) dropCursor(i); });
 
+      // ---- NAMED GESTURES for JARVIS (gestures.js)
+      NAMED.hands = []; NAMED.gestures = [];
+      (res.landmarks || []).forEach((lms, i) => {
+        const label = res.handedness?.[i]?.[0]?.categoryName;
+        // MediaPipe labels hands as if the image were mirrored; this
+        // camera frame is not, so the label is swapped.
+        const hand = label === "Left" ? "right" : label === "Right" ? "left" : null;
+        if (!hand || NAMED.hands.includes(hand)) return;
+        NAMED.hands.push(hand);
+        const g = gestureEngine.process(hand, fromMediaPipe(lms));
+        if (g) NAMED.gestures.push({ hand, gesture: g.gesture,
+                                     confidence: +g.confidence.toFixed(3) });
+      });
+      ["left", "right"].forEach(h => { if (!NAMED.hands.includes(h)) gestureEngine.lost(h); });
+
       // ---- GESTURE v3.9: THE DELIBERATE CLAP (Jared, after false
       // resets kept wiping his pinch tests: "that reset needs to be
       // more deliberate!"). Three locks on top of the speed signature:
@@ -2886,6 +2908,8 @@ function pushState(now) {
   if (now - lastPush < 22) return;
   lastPush = now;
   const st = {
+    hands: NAMED.hands,
+    gestures: NAMED.gestures,
     cursors: Object.keys(cursors).sort().map(k => {
       const c = cursors[k];
       return { x: +(c.x / innerWidth).toFixed(4), y: +(c.y / innerHeight).toFixed(4),

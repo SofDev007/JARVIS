@@ -176,6 +176,11 @@ airboard:
   # Notes/media orb paths are personal filesystem locations, so they live
   # outside this tracked file — see orbs_file (gitignored) below.
   orbs_file: config/airboard.local.yaml
+  # Named gestures (thumbs_up, peace, ...) recognised in the page and sent
+  # to JARVIS as perception.gesture events.
+  repeat_interval_s: 0.0       # re-publish a held gesture every N s (0 = edge only)
+  gesture_thresholds: {}       # per-gesture min confidence, e.g. {thumbs_up: 0.75}
+  disabled_gestures: []        # semantic ids never published
 
 knowledge:
   enabled: true                # local RAG: ingest -> chunk -> embed -> recall

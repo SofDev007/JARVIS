@@ -345,6 +345,15 @@ class AirboardConfig:
     """Gitignored YAML listing the notes/media orbs — personal file-system
     paths, so kept out of the tracked default config entirely."""
 
+    # Named gestures the page recognises and JARVIS receives as events
+    repeat_interval_s: float = 0.0
+    """Re-publish a *held* gesture every N seconds (0 = edge-triggered only)."""
+    gesture_thresholds: dict[str, float] = field(default_factory=dict)
+    """Per-gesture minimum confidence by semantic id (``{"thumbs_up": 0.75}``);
+    below it counts as no gesture."""
+    disabled_gestures: list[str] = field(default_factory=list)
+    """Semantic ids never published (e.g. ``[finger_gun]``)."""
+
 
 @dataclass(frozen=True)
 class KnowledgeConfig:
@@ -965,6 +974,17 @@ def _validate(config: AppConfig) -> AppConfig:
          "airboard.media_dir must be a directory path"),
         (bool(str(airboard.orbs_file).strip()),
          "airboard.orbs_file must be a file path"),
+        (airboard.repeat_interval_s >= 0,
+         "airboard.repeat_interval_s must be >= 0"),
+        (isinstance(airboard.gesture_thresholds, dict)
+         and all(
+             isinstance(k, str) and isinstance(v, (int, float)) and 0 < v <= 1
+             for k, v in airboard.gesture_thresholds.items()
+         ),
+         "airboard.gesture_thresholds must map semantic ids to values in (0, 1]"),
+        (isinstance(airboard.disabled_gestures, list)
+         and all(isinstance(g, str) and g for g in airboard.disabled_gestures),
+         "airboard.disabled_gestures must be a list of semantic ids"),
         (bool(str(knowledge.db_path).strip()),
          "knowledge.db_path must be a file path"),
         (knowledge.embedder in ("hashing", "semantic"),

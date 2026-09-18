@@ -109,6 +109,7 @@ whatever is on screen at capture time enters the prompt path.
 | **T6** | LLM provider | Sees every prompt sent to cloud | Commercial / legal process | **Certain** — by design, not a breach |
 | **T7** | Physical access, unlocked machine | Everything | Varies | **Low**, unmitigable |
 | **T8** | Supply chain (dependency compromise) | Arbitrary code at operator privilege | Broad | **Low-Medium** |
+| **T9** | Malicious web page in the operator's browser | Sends cross-origin requests to loopback ports; DNS rebinding | Drive local services | **Medium** — every browsing session |
 
 Deliberately **out of scope:** nation-state actors, hardware implants,
 and side-channel attacks. Defending against those is not proportionate to a
@@ -426,6 +427,37 @@ simultaneously and shadow each other into a broken import.
 `pip-audit` in the loop. Housekeeping, but it is also the difference between
 a reproducible environment and a machine-specific one.
 
+### 4.11 Forged gestures via the Airboard heartbeat ✅ Airboard
+
+**Actor:** T9 (any page open in the operator's browser), T1 (another local
+process)
+
+Hand tracking moved into the browser: the Airboard page
+(`digital_twin/airboard/`, `127.0.0.1:8794`) posts a ~45 Hz heartbeat to
+`POST /state` whose `hands`/`gestures` fields the module publishes as
+`perception.gesture` events, which the intent engine maps to automation
+(A1). The server has no session token. Before this change a web page could
+reach it with a CORS "simple request" (`text/plain` POST needs no
+preflight), and a DNS-rebinding page could also read notes via `GET /note`.
+
+**Controls:**
+- **Host allowlist** on every request (loopback binds): `Host` must be
+  `127.0.0.1|localhost|[::1]:<port>`. Defeats DNS rebinding for reads and
+  writes.
+- **Origin check** on every POST: a present `Origin` must equal the
+  server's own origin. Browsers always send `Origin` cross-site, so no page
+  can forge a heartbeat or a `/cmd`. Origin-less clients (the local CLI
+  tools) still work, by design.
+- **Strict payload validation** (`parse_perception`): ≤2 hands from
+  {left,right}, ids `^[a-z0-9_]{1,40}$`, finite confidence in [0,1]; a bad
+  frame is dropped whole. Gesture events still pass through the dispatcher's
+  permission policy and confirmation gates like any other intent.
+
+**Residual:** a local process (T1) can still post gestures, exactly as
+it could already drive `/cmd` or type keystrokes. Covered by B1, not by
+this server. Tests: `tests/test_airboard.py` (foreign Host, cross-origin
+POST, payload validation).
+
 ---
 
 ## 5. Trust boundaries
@@ -439,6 +471,7 @@ a reproducible environment and a machine-specific one.
 | B5 | Desktop ↔ phone | mTLS + device certs | ✅ M18 Phase 3 |
 | B6 | Machine ↔ LLM provider | Privacy tiers | ✅ M20 |
 | B7 | Identification ↔ authorization | Device possession, never voice | ✅ M18 Phase 3 |
+| B8 | Browser web pages ↔ Airboard (gesture → intent) | Host allowlist + POST Origin check + payload validation (§4.11) | ✅ Airboard |
 
 **B3, previously the boundary that did not exist, is now enforced (M21)** —
 see §4.1. The remaining ceiling: the taint signal is coarse (whole-turn, not

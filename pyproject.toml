@@ -62,7 +62,7 @@ py-modules = ["main"]
 include = ["digital_twin*", "gesturesense*"]
 
 [tool.setuptools.package-data]
-"digital_twin.airboard" = ["static/*.html"]
+"digital_twin.airboard" = ["static/*.html", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
