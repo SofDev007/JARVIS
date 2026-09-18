@@ -67,6 +67,7 @@ class _PlanRun:
     completed_steps: int = 0
     failed_steps: int = 0
     deadline: float = 0.0
+    tainted: bool = False
 
     def steps_before_stage(self) -> int:
         return sum(len(stage) for stage in self.plan.stages[: self.stage_index])
@@ -218,7 +219,8 @@ class PlannerModule(BaseModule):
             self._announce_stillborn(goal or "(llm plan)", str(exc),
                                      status="rejected")
             return
-        self._launch(plan, provenance=event.event_id)
+        self._launch(plan, provenance=event.event_id,
+                    tainted=bool(event.payload.get("tainted", False)))
 
     def _start_skill(self, query: str, provenance: str) -> None:
         if self._memory is None:
@@ -246,8 +248,9 @@ class PlannerModule(BaseModule):
     # ------------------------------------------------------------------
     # Execution choreography
     # ------------------------------------------------------------------
-    def _launch(self, plan: Plan, provenance: str) -> None:
-        run = _PlanRun(plan=plan, plan_id=uuid.uuid4().hex, provenance=provenance)
+    def _launch(self, plan: Plan, provenance: str, tainted: bool = False) -> None:
+        run = _PlanRun(plan=plan, plan_id=uuid.uuid4().hex, provenance=provenance,
+                       tainted=tainted)
         self._runs[run.plan_id] = run
         self._count("started")
         self._progress(run, "started",
@@ -270,6 +273,7 @@ class PlannerModule(BaseModule):
                     "plan_id": run.plan_id,
                     "step": base + offset,
                     "source_event": run.provenance,
+                    "tainted": run.tainted,
                 },
             ))
 

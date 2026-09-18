@@ -92,6 +92,23 @@ def test_validation_rejects_bad_records(store):
         store.add(kind="semantic", content="   ")
     with pytest.raises(ValueError):
         store.add(kind="semantic", content="x", importance=1.5)
+    with pytest.raises(ValueError):
+        store.add(kind="semantic", content="x", privacy_tier="nope")
+
+
+def test_privacy_tier_defaults_local_only_and_round_trips(store):
+    default = store.add(kind="semantic", content="x")
+    assert default.privacy_tier == "local_only"
+    assert store.get(default.id).privacy_tier == "local_only"
+
+    opted_in = store.add(kind="semantic", content="y", privacy_tier="cloud_ok")
+    assert opted_in.privacy_tier == "cloud_ok"
+    assert store.get(opted_in.id).privacy_tier == "cloud_ok"
+
+    exported = store.export()
+    tiers = {row["id"]: row["privacy_tier"] for row in exported}
+    assert tiers[default.id] == "local_only"
+    assert tiers[opted_in.id] == "cloud_ok"
 
 
 def test_persistence_across_reopen(tmp_path):

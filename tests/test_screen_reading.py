@@ -315,8 +315,8 @@ def test_reasoner_injects_fresh_screen_text_and_drops_stale(bus):
 
     model = ScriptedModel(['{"reply": "ok", "intent": null, '
                           '"plan": null, "remember": null, "reasoning": "r"}'] * 2)
-    reasoner = ChatReasoner(LLMConfig(memory_results=0), model=model,
-                            allowed_intents=())
+    reasoner = ChatReasoner(LLMConfig(memory_results=0, screen_cloud_ok=True),
+                            model=model, allowed_intents=())
     reasoner.start(bus)
     try:
         bus.publish(Event(Topics.SCREEN, "screen_reader",

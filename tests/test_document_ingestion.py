@@ -1,8 +1,10 @@
 """Tests for M15 document ingestion: format extraction (dependency-free
-paths) and the folder watcher (containment, idempotence, filtering)."""
+paths) and the folder watcher (containment, idempotence, filtering, and
+the ingestion quarantine — THREAT_MODEL.md §4.1 control #5)."""
 
 from __future__ import annotations
 
+import time
 import zipfile
 from pathlib import Path
 
@@ -117,16 +119,48 @@ def _watcher(watch_dir, store, interval=30.0):
     )
 
 
-def test_watch_ingests_supported_files(tmp_path, store):
+def test_watch_queues_supported_files_without_ingesting(tmp_path, store):
     watch = tmp_path / "docs"
     watch.mkdir()
     (watch / "a.md").write_text("First document about penguins.")
     (watch / "b.txt").write_text("Second document about glaciers.")
     (watch / "ignore.xyz").write_text("unsupported")
     watcher = _watcher(watch, store)
-    assert watcher.scan_once() == 2
-    titles = {doc.title for doc in store.documents()}
+    assert watcher.scan_once() == 2          # queued, not ingested
+    assert store.documents() == []           # nothing written without approval
+    titles = {p["title"] for p in watcher.pending()}
     assert titles == {"a.md", "b.txt"}
+
+
+def test_approve_ingests_the_reviewed_content(tmp_path, store):
+    watch = tmp_path / "docs"
+    watch.mkdir()
+    (watch / "a.md").write_text("stable content")
+    watcher = _watcher(watch, store)
+    watcher.scan_once()
+    [pending] = watcher.pending()
+    assert watcher.approve(pending["id"]) is True
+    assert [doc.title for doc in store.documents()] == ["a.md"]
+    assert watcher.pending() == []
+
+
+def test_reject_discards_and_does_not_requeue(tmp_path, store):
+    watch = tmp_path / "docs"
+    watch.mkdir()
+    (watch / "a.md").write_text("junk content")
+    watcher = _watcher(watch, store)
+    watcher.scan_once()
+    [pending] = watcher.pending()
+    assert watcher.reject(pending["id"]) is True
+    assert store.documents() == []
+    assert watcher.scan_once() == 0          # same content not re-offered
+    assert watcher.pending() == []
+
+
+def test_unknown_quarantine_id_is_refused(tmp_path, store):
+    watcher = _watcher(tmp_path, store)
+    assert watcher.approve("q999") is False
+    assert watcher.reject("q999") is False
 
 
 def test_watch_is_idempotent(tmp_path, store):
@@ -135,9 +169,11 @@ def test_watch_is_idempotent(tmp_path, store):
     (watch / "a.md").write_text("stable content")
     watcher = _watcher(watch, store)
     assert watcher.scan_once() == 1
-    assert watcher.scan_once() == 0          # unchanged → no re-ingest
+    assert watcher.scan_once() == 0          # already pending → no re-queue
+    watcher.approve(watcher.pending()[0]["id"])
+    assert watcher.scan_once() == 0          # already ingested → no re-queue
     (watch / "a.md").write_text("changed content now")
-    assert watcher.scan_once() == 1          # changed → re-ingested
+    assert watcher.scan_once() == 1          # changed → queued again
 
 
 def test_watch_refuses_paths_outside_allowed_roots(tmp_path, store):
@@ -153,7 +189,16 @@ def test_watch_refuses_paths_outside_allowed_roots(tmp_path, store):
     assert store.documents() == []
 
 
-def test_watch_announces_on_the_bus(tmp_path, store, bus):
+def _wait_for(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def test_watch_announces_quarantine_and_ingest_on_the_bus(tmp_path, store, bus):
     watch = tmp_path / "docs"
     watch.mkdir()
     (watch / "a.md").write_text("hello")
@@ -164,10 +209,15 @@ def test_watch_announces_on_the_bus(tmp_path, store, bus):
     watcher.start(bus)
     try:
         watcher.scan_once()
+        assert _wait_for(lambda: any(
+            event.payload.get("event") == "quarantined"
+            and event.payload.get("title") == "a.md" for event in seen))
+        watcher.approve(watcher.pending()[0]["id"])
+        assert _wait_for(lambda: any(
+            event.payload.get("event") == "ingested"
+            and event.payload.get("title") == "a.md" for event in seen))
     finally:
         watcher.stop()
-    assert any(event.payload.get("event") == "ingested"
-               and event.payload.get("title") == "a.md" for event in seen)
 
 
 def test_edited_file_replaces_stale_version(tmp_path, store):
@@ -176,8 +226,10 @@ def test_edited_file_replaces_stale_version(tmp_path, store):
     (watch / "a.md").write_text("Version one about penguins.")
     watcher = _watcher(watch, store)
     watcher.scan_once()
+    watcher.approve(watcher.pending()[0]["id"])
     (watch / "a.md").write_text("Version two about penguins, corrected.")
     watcher.scan_once()
+    watcher.approve(watcher.pending()[0]["id"])
     docs = store.documents()
     assert len(docs) == 1                    # replaced, not accumulated
     assert docs[0].title == "a.md"

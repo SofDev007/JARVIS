@@ -114,6 +114,22 @@ def test_ingest_is_idempotent_by_content(store):
     assert len(store.documents()) == 1
 
 
+def test_privacy_tier_defaults_local_only_and_round_trips(store):
+    doc_id, _, _ = store.ingest("t", "default-tier content", source="x")
+    doc = next(d for d in store.documents() if d.doc_id == doc_id)
+    assert doc.privacy_tier == "local_only"
+    hits = store.search("default-tier content", min_score=0.0)
+    assert hits and hits[0].privacy_tier == "local_only"
+
+    opted_in_id, _, _ = store.ingest(
+        "t2", "cloud-eligible content", source="x", privacy_tier="cloud_ok")
+    opted_in = next(d for d in store.documents() if d.doc_id == opted_in_id)
+    assert opted_in.privacy_tier == "cloud_ok"
+
+    with pytest.raises(ValueError):
+        store.ingest("t3", "bad tier", source="x", privacy_tier="nope")
+
+
 def test_forget_removes_document_and_chunks(store):
     doc_id, _, _ = store.ingest("t", "some forgettable text", source="x")
     assert store.forget(doc_id) is True
@@ -239,7 +255,7 @@ def test_reasoner_injects_knowledge_section(store):
 
     store.ingest("hr-policy",
                  "The PTO policy grants engineers 25 days of paid leave.",
-                 source="test")
+                 source="test", privacy_tier="cloud_ok")
     reasoner = ChatReasoner(
         LLMConfig(), model=lambda: None, allowed_intents=(),
         knowledge=(store, KnowledgeConfig(min_score=0.05)),
@@ -253,6 +269,24 @@ def test_reasoner_injects_knowledge_section(store):
     # And with no knowledge wired, the section is empty.
     bare = ChatReasoner(LLMConfig(), model=lambda: None, allowed_intents=())
     assert bare._knowledge_section("anything") == ""
+
+
+def test_knowledge_section_privacy_tier_filtering(store):
+    from digital_twin.reasoning.chat_reasoner import ChatReasoner
+
+    store.ingest("secret-doc", "The confidential merger plan details.",
+                 source="test")  # default: local_only
+    config = KnowledgeConfig(min_score=0.05)
+
+    cloud = ChatReasoner(LLMConfig(provider="gemini"), model=lambda: None,
+                         allowed_intents=(), knowledge=(store, config))
+    assert "confidential merger" not in cloud._knowledge_section(
+        "tell me about the merger plan")
+
+    local = ChatReasoner(LLMConfig(provider="ollama"), model=lambda: None,
+                         allowed_intents=(), knowledge=(store, config))
+    assert "confidential merger" in local._knowledge_section(
+        "tell me about the merger plan")
 
 
 def test_reasoner_survives_broken_knowledge():

@@ -1,0 +1,14 @@
+# Copy this file to airboard.local.yaml and point it at your own folders.
+# airboard.local.yaml is gitignored: orb paths are personal (a notes vault,
+# a props folder) and never belong in version control.
+#
+# A relative path resolves against the project root; an absolute path
+# (e.g. C:\Users\you\ObsidianVault or /home/you/props) lets you point at
+# an existing folder without copying files into this repo.
+orbs:
+  - title: Notes
+    path: C:\Users\you\ObsidianVault   # a folder of .md files
+    kind: notes
+  - title: Props
+    path: data/airboard/media           # images/video/3D models
+    kind: media

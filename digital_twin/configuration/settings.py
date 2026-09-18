@@ -312,6 +312,41 @@ class DashboardConfig:
 
 
 @dataclass(frozen=True)
+class AirboardConfig:
+    """The gesture-controlled overlay board: markdown notes, images and 3D
+    models floating over the camera feed as glass cards, driven by an
+    on-screen hand tracker and/or an AI agent POSTing JSON commands.
+
+    **Loopback only, off by default** — same posture as :class:`DashboardConfig`.
+    Unlike the dashboard there is no per-session token: every endpoint is
+    open to any local process that can reach the bound port, matching the
+    ported reference implementation's stated model ("this never leaves
+    localhost"). Orb paths (a personal notes vault, a media props folder)
+    are deliberately kept out of this typed config and out of version
+    control — see ``orbs_file``.
+    """
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8794
+    """TCP port (0 = ephemeral, mainly for tests)."""
+    allow_remote: bool = False
+    """Permit binding non-loopback hosts. Off by default on purpose."""
+    name: str = "JARVIS"
+    """Shown in the page UI; has no security meaning."""
+    state_timeout_s: int = 600
+    """A stale non-idle agent state (state/state) decays to idle after this."""
+    state_dir: str = "data/airboard/state"
+    """Heartbeat files the agent writes: state, mood.json, wave.json."""
+    media_dir: str = "data/airboard/media"
+    """Default media airlock root, used when no orb of kind 'media' is
+    configured in ``orbs_file``."""
+    orbs_file: str = "config/airboard.local.yaml"
+    """Gitignored YAML listing the notes/media orbs — personal file-system
+    paths, so kept out of the tracked default config entirely."""
+
+
+@dataclass(frozen=True)
 class KnowledgeConfig:
     """The knowledge engine: local document ingestion + vector recall.
 
@@ -371,18 +406,55 @@ class LLMConfig:
         "You are KNOWA (Knowledge-driven Neural Operations, Workflow & "
         "Automation), the Mark I AI assistant. You turn information into "
         "understanding, simplify complexity, and solve problems with "
-        "precision and reliability.\n"
-        "Address the user as \"Boss\" — naturally, once or twice per reply, "
-        "never overusing it, and never by a real name unless asked.\n"
-        "Tone: professional, calm, logical, confident, friendly, and lightly "
-        "witty when it fits. Never arrogant or over-emotional; no unnecessary "
-        "emojis.\n"
-        "Accuracy before speed: never fabricate, separate facts from "
+        "precision and reliability.\n\n"
+        "You speak directly to your one user, who you address as \"Boss\". "
+        "Your replies are converted to speech, so keep them spoken-length: "
+        "short, natural sentences. No lists, no headers, no markdown.\n\n"
+        "CORE PERSONALITY\n"
+        "- Dry, understated wit — closer to a sharp, competent butler than "
+        "a comedian. Clever, not silly.\n"
+        "- Confident. You know what you're doing and it shows in how briefly "
+        "you say things, not in how much you explain.\n"
+        "- Genuinely on Boss's side. The wit never undermines that — tease, "
+        "don't insult.\n"
+        "- You are NOT a generic assistant. Never say \"As an AI,\" "
+        "\"I'm here to help!\", \"Is there anything else I can help with?\", "
+        "or similar stock phrasing. Never hedge more than once in a reply. "
+        "Never apologize unless something actually went wrong.\n"
+        "- Accuracy before speed: never fabricate, separate facts from "
         "assumptions, admit uncertainty, be concise for simple questions and "
         "thorough for complex ones, and if you err, acknowledge and correct "
-        "it plainly.\n"
+        "it plainly.\n\n"
+        "HOW YOU VARY YOUR TONE\n"
+        "Most replies are just direct and efficient — answer the question, "
+        "confirm the action, move on. Do not force a joke, compliment, or "
+        "jab into every single reply. Let tone shifts arise from what's "
+        "actually happening:\n"
+        "- Most of the time: plain, competent, brief.\n"
+        "- Sometimes, when Boss does something well or clever: acknowledge "
+        "it with dry approval, not gushing praise.\n"
+        "- Sometimes, when Boss makes an obvious mistake or repeats one: "
+        "call it out lightly, never harshly.\n"
+        "- If nothing notable happened, just answer.\n\n"
+        "STYLE RULES\n"
+        "- Keep replies short — this is spoken aloud, not read on a screen.\n"
+        "- Stay in character always. Never break to discuss being a language "
+        "model or an AI system.\n"
+        "- No emoji. No markdown. No em-dash lists.\n"
+        "- Say \"Boss\" naturally, once or twice per reply, never overusing "
+        "it, and never by a real name unless asked.\n\n"
+        "WAKE WORD GREETINGS\n"
         "If the user's whole message is just the wake word \"KNOWA\", reply "
-        "exactly: \"KNOWA activated. How can I assist you today, Boss?\""
+        "with a varied, time-aware greeting that always includes \"Boss\". "
+        "Base the time-of-day portion (morning/afternoon/evening) on the "
+        "current time provided in context. Examples:\n"
+        "\"Good morning, Boss. KNOWA online — what's the plan?\" | "
+        "\"Good afternoon, Boss. Systems nominal. How can I help?\" | "
+        "\"Good evening, Boss. Ready when you are.\" | "
+        "\"KNOWA activated, Boss. Standing by.\" | "
+        "\"Morning, Boss. Coffee's on me — what do you need?\"\n"
+        "Vary the phrasing each time; never repeat the exact same line "
+        "twice in a row."
     )
     """The assistant's identity and voice, injected at the top of every
     reasoning prompt. Edit to reshape who the assistant is — its name,
@@ -402,6 +474,11 @@ class LLMConfig:
     """Conversation turns kept in the prompt window."""
     memory_results: int = 5
     """Ranked memories injected into each prompt (0 disables recall)."""
+    screen_cloud_ok: bool = False
+    """Whether OCR'd screen text may enter cloud prompts (THREAT_MODEL.md
+    §4.8). False (default) omits fresh screen text from the prompt when
+    ``provider`` isn't local; ``provider == "ollama"`` always includes it —
+    nothing to protect on-device."""
 
 
 @dataclass(frozen=True)
@@ -530,12 +607,34 @@ class VoiceConfig:
     speak_replies: bool = True
     """Voice assistant replies via the gated ``speak`` action (mute with
     ``security.permissions: {speak: deny}``)."""
-    tts_backend: str = "auto"
-    """``auto`` | ``espeak-ng`` | ``espeak`` | ``say`` | ``powershell``."""
+    tts_backend: str = "piper"
+    """``piper`` (default) | ``jarvis`` | ``auto`` | ``espeak-ng`` | ``espeak``
+    | ``say`` | ``powershell``. Piper is fast local TTS; jarvis uses
+    pre-cached XTTS-v2 for system phrases only."""
     tts_rate_wpm: int = 175
-    wake_word: str = "knowa"
+    piper_voice: str = "en_GB-alan-medium"
+    """Piper voice ID for live synthesis. Downloaded on first use from
+    HuggingFace (rhasspy/piper-voices). Common options: en_GB-alan-low,
+    en_US-lessac-low, en_US-amy-low."""
+    piper_data_dir: str = "models/piper"
+    """Where Piper stores downloaded voice models."""
+    jarvis_reference_wav: str = "voices/reference_voice.wav"
+    """Reference clip for XTTS-v2 voice cloning (6-20s, clean, mono, British
+    male narrator for JARVIS style). Only used for pre-cached phrases."""
+    jarvis_precache_dir: str = "voices/precache"
+    """Pre-generated .wav files for system phrases (JARVIS-cloned voice)."""
+    precached_phrases: list[str] = field(
+        default_factory=lambda: [
+            "I'm still working on your previous request — give me a moment.",
+            "Something went wrong while thinking about that; the details are in my logs.",
+            "Cancelled that.",
+        ]
+    )
+    """System phrases pre-synthesized with JARVIS voice. Only these exact
+    strings get the premium voice; all LLM output uses Piper."""
+    wake_word: str = "jarvis"
     """Spoken phrase that starts a listening session in ``push_to_talk``
-    mode. Defaults to ``knowa`` — the assistant's name — which is the one
+    mode. Defaults to ``jarvis`` — the assistant's name — which is the one
     place a more-exposing default is justified: a hands-free assistant is
     expected to answer to its name. NOTE: a non-empty wake word implies
     *continuous microphone capture* by the always-on detector. Set to ``''``
@@ -544,6 +643,17 @@ class VoiceConfig:
     word merely presses the push-to-talk button."""
     wake_backend: str = "auto"
     """``auto`` (reuse the STT transcriber) | ``scripted`` (tests)."""
+    wake_word_full_form: str = "Just a rather very intelligent system"
+    """Full expansion of the wake word acronym, used in greetings and help."""
+    wake_loopback_guard_s: float = 0.4
+    """Anti-loopback guard (M18 threat model §4.5): the wake-word detector
+    ignores triggers while the assistant's own TTS is speaking, plus this
+    many seconds afterward — so JARVIS saying its own name can't re-trigger
+    its own always-on mic. A time-window suppression, not audio-content
+    fingerprinting: it also delays a genuine wake-word barge-in during this
+    window, a deliberate simplification given no echo-cancellation
+    infrastructure exists. Set to ``0`` to disable (not recommended if
+    ``wake_word`` and TTS are both enabled)."""
 
 
 @dataclass(frozen=True)
@@ -599,6 +709,7 @@ class AppConfig:
     secrets: SecretsConfig = field(default_factory=SecretsConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    airboard: AirboardConfig = field(default_factory=AirboardConfig)
     knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     chat: ChatConfig = field(default_factory=ChatConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -647,6 +758,7 @@ def _validate(config: AppConfig) -> AppConfig:
     secrets = config.secrets
     browser = config.browser
     dashboard = config.dashboard
+    airboard = config.airboard
     knowledge = config.knowledge
     _DECISIONS = {"allow", "confirm", "deny"}
     _RISKS = {"safe", "sensitive", "dangerous"}
@@ -726,9 +838,9 @@ def _validate(config: AppConfig) -> AppConfig:
          "voice.wake_word must be a string ('' disables it)"),
         (voice.wake_backend in ("auto", "scripted"),
          "voice.wake_backend must be 'auto' or 'scripted'"),
-        (voice.tts_backend in ("auto", "espeak-ng", "espeak", "say",
-                               "powershell"),
-         "voice.tts_backend must be auto/espeak-ng/espeak/say/powershell"),
+        (voice.tts_backend in ("auto", "piper", "jarvis", "espeak-ng", "espeak",
+                               "say", "powershell"),
+         "voice.tts_backend must be auto/piper/jarvis/espeak-ng/espeak/say/powershell"),
         (50 <= voice.tts_rate_wpm <= 400,
          "voice.tts_rate_wpm must be within 50..400"),
         (planner.step_timeout_s > 0, "planner.step_timeout_s must be > 0"),
@@ -837,6 +949,22 @@ def _validate(config: AppConfig) -> AppConfig:
          "dashboard.recent_events must be in 10..5000"),
         (not (security.confirmation == "web" and not dashboard.enabled),
          "security.confirmation: web requires dashboard.enabled: true"),
+        (isinstance(airboard.port, int) and 0 <= airboard.port <= 65535,
+         "airboard.port must be 0..65535"),
+        (bool(str(airboard.host).strip()),
+         "airboard.host must be a hostname or address"),
+        (airboard.allow_remote
+         or str(airboard.host) in ("127.0.0.1", "localhost", "::1"),
+         "airboard.host must be loopback unless airboard.allow_remote is "
+         "true"),
+        (airboard.state_timeout_s > 0,
+         "airboard.state_timeout_s must be > 0"),
+        (bool(str(airboard.state_dir).strip()),
+         "airboard.state_dir must be a directory path"),
+        (bool(str(airboard.media_dir).strip()),
+         "airboard.media_dir must be a directory path"),
+        (bool(str(airboard.orbs_file).strip()),
+         "airboard.orbs_file must be a file path"),
         (bool(str(knowledge.db_path).strip()),
          "knowledge.db_path must be a file path"),
         (knowledge.embedder in ("hashing", "semantic"),

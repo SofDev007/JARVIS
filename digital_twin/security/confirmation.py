@@ -23,8 +23,14 @@ class ConfirmationProvider(ABC):
     name: str = "abstract"
 
     @abstractmethod
-    def request(self, action: str, params: Mapping[str, Any], timeout_s: float) -> bool:
-        """Return ``True`` only on explicit approval within ``timeout_s``."""
+    def request(self, action: str, params: Mapping[str, Any], timeout_s: float,
+                *, tainted: bool = False) -> bool:
+        """Return ``True`` only on explicit approval within ``timeout_s``.
+
+        ``tainted`` (THREAT_MODEL.md §4.1) means this turn included
+        untrusted content (RAG/OCR) — providers that show the user
+        anything should surface this.
+        """
 
 
 class AutoDenyConfirmation(ConfirmationProvider):
@@ -32,7 +38,8 @@ class AutoDenyConfirmation(ConfirmationProvider):
 
     name = "auto_deny"
 
-    def request(self, action: str, params: Mapping[str, Any], timeout_s: float) -> bool:
+    def request(self, action: str, params: Mapping[str, Any], timeout_s: float,
+                *, tainted: bool = False) -> bool:
         logger.info(
             "Auto-denied action %r (no interactive confirmation configured)", action
         )
@@ -50,7 +57,8 @@ class ConsoleConfirmation(ConfirmationProvider):
 
     name = "console"
 
-    def request(self, action: str, params: Mapping[str, Any], timeout_s: float) -> bool:
+    def request(self, action: str, params: Mapping[str, Any], timeout_s: float,
+                *, tainted: bool = False) -> bool:
         stdin = getattr(sys, "stdin", None)
         if stdin is None or not stdin.isatty():
             logger.warning(
@@ -60,11 +68,16 @@ class ConsoleConfirmation(ConfirmationProvider):
 
         answer: list[str] = []
         done = threading.Event()
+        warning = (
+            "\n[confirm] ⚠ This action was proposed while untrusted "
+            "content (a document or the screen) was in context.\n"
+            if tainted else ""
+        )
 
         def ask() -> None:
             try:
                 answer.append(
-                    input(f"\n[confirm] Run action {action!r} with {dict(params)}? [y/N] ")
+                    input(f"{warning}\n[confirm] Run action {action!r} with {dict(params)}? [y/N] ")
                 )
             except (EOFError, KeyboardInterrupt):
                 answer.append("")
@@ -93,9 +106,13 @@ class ScriptedConfirmation(ConfirmationProvider):
     def __init__(self, answers: list[bool] | None = None):
         self._answers = list(answers or [])
         self.requests: list[tuple[str, dict]] = []
+        self.tainted_flags: list[bool] = []
+        """``tainted`` value for each entry in ``requests``, same index."""
 
-    def request(self, action: str, params: Mapping[str, Any], timeout_s: float) -> bool:
+    def request(self, action: str, params: Mapping[str, Any], timeout_s: float,
+                *, tainted: bool = False) -> bool:
         self.requests.append((action, dict(params)))
+        self.tainted_flags.append(tainted)
         return self._answers.pop(0) if self._answers else False
 
 

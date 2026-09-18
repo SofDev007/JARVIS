@@ -4,6 +4,10 @@ Security posture, stated plainly:
 
 * **Binding**: ``127.0.0.1`` unless ``dashboard.allow_remote`` is set —
   and config validation refuses a non-loopback host without that flag.
+* **mTLS (M18 Phase 3)**: when device enrolment is enabled, every endpoint
+  requires a client certificate from an enrolled device. This closes the
+  camera-feed exposure (§4.4) — unauthenticated local processes can no longer
+  read status or the MJPEG stream.
 * **CSRF containment**: every state-changing endpoint requires the
   ``X-Dashboard-Token`` header. The token is random per server start and
   is embedded only in the served page — a malicious website open in the
@@ -77,6 +81,8 @@ margin-top:8px;flex-wrap:wrap} .stats b{color:var(--text)}
 <div class="grid">
  <div class="panel wide" id="confirm-panel" style="display:none">
   <h2>Waiting for your approval</h2><div id="confirms"></div></div>
+ <div class="panel wide" id="quarantine-panel" style="display:none">
+  <h2>Documents waiting for review</h2><div id="quarantine"></div></div>
  <div class="panel"><h2>Modules</h2>
   <table><thead><tr><th>module</th><th>state</th><th>detail</th></tr></thead>
   <tbody id="modules"></tbody></table>
@@ -139,6 +145,19 @@ async function refresh(){
     `<button class="deny" onclick="answer('${p.id}',false)">Deny</button>`+
     `</div>`).join("");
   } else panel.style.display="none";
+  try{
+   const q=await get("/api/quarantine");
+   const qpanel=document.getElementById("quarantine-panel");
+   if(q&&q.pending&&q.pending.length){qpanel.style.display="block";
+    document.getElementById("quarantine").innerHTML=q.pending.map(p=>
+     `<div class="confirm">Ingest <code>${esc(p.title)}</code> `+
+     `<span class="empty">from ${esc(p.source)}, ${p.chars} chars</span>`+
+     `<br><br>`+
+     `<button onclick="answerQuarantine('${p.id}',true)">Approve</button>`+
+     `<button class="deny" onclick="answerQuarantine('${p.id}',false)">Reject</button>`+
+     `</div>`).join("");
+   } else if(qpanel) qpanel.style.display="none";
+  }catch(e){}
   try{
    const m=await get("/api/memory");
    const md=document.getElementById("memory");
@@ -212,6 +231,8 @@ async function refresh(){
 }
 async function answer(id,ok){await post("/api/confirmations/"+id,
   {approve:ok});refresh()}
+async function answerQuarantine(id,ok){await post("/api/quarantine/"+id,
+  {approve:ok});refresh()}
 document.getElementById("send").onclick=async()=>{
  const box=document.getElementById("chattext");
  if(box.value.trim()){await post("/api/chat",{text:box.value.trim()});
@@ -241,16 +262,21 @@ class DashboardServer:
         status_source: Callable[[], dict[str, Any]],
         events_source: Callable[[], list[dict[str, Any]]],
         chat_sink: Callable[[str], None],
-        confirmations,  # WebConfirmation | None
+        confirmations,  # WebConfirmation | DeviceConfirmationProvider | None
         data_sources: "dict[str, Callable[[], Any]] | None" = None,
         stream_source: "Callable[[float], list[dict[str, Any]]] | None" = None,
         frame_hub=None,  # FrameHub | None — MJPEG at /api/frames/<name>
+        device_registry=None,  # M18 Phase 3: DeviceRegistry for mTLS
+        device_confirmation=None,  # M18 Phase 3: DeviceConfirmationProvider
+        quarantine_resolve=None,  # Callable[[str, bool], bool] | None
     ):
         self._token = _secrets.token_hex(16)
         page = _PAGE.replace("__TOKEN__", self._token).replace(
             "__VERSION__", version)
         sources = dict(data_sources or {})  # name -> callable, GET /api/<name>
         outer = self
+        outer._device_registry = device_registry
+        outer._device_confirmation = device_confirmation
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):  # route into our logging
@@ -274,6 +300,22 @@ class DashboardServer:
                 provided = self.headers.get("X-Dashboard-Token") or ""
                 return _secrets.compare_digest(
                     provided.encode("utf-8"), outer._token.encode("utf-8"))
+
+            def _get_client_device(self) -> str | None:
+                """Get the device_id from the mTLS client cert, if available."""
+                # The client cert is available via self.connection.getpeercert()
+                # after the SSL handshake. This returns the device_id if enrolled.
+                if outer._device_registry is None:
+                    return None
+                try:
+                    # Get the client certificate from the SSL socket
+                    cert_der = self.connection.getpeercert(binary_form=True)
+                    if cert_der is None:
+                        return None
+                    from digital_twin.security.mtls_server import verify_client_cert
+                    return verify_client_cert(outer._device_registry, cert_der)
+                except (AttributeError, OSError):
+                    return None
 
             # -- GET ------------------------------------------------------
             def do_GET(self):
@@ -367,8 +409,30 @@ class DashboardServer:
                                          "web confirmations not enabled"})
                         return
                     confirmation_id = self.path.rsplit("/", 1)[-1]
-                    resolved = confirmations.resolve(
-                        confirmation_id, bool(body.get("approve")))
+                    approved = bool(body.get("approve"))
+
+                    # M18 Phase 3: Device confirmation requires second device
+                    if outer._device_confirmation is not None:
+                        responding_device = self._get_client_device()
+                        if responding_device is None:
+                            self._json(403, {"error":
+                                "device confirmation requires mTLS client cert"})
+                            return
+                        resolved = outer._device_confirmation.resolve(
+                            confirmation_id, approved, responding_device)
+                    else:
+                        resolved = confirmations.resolve(
+                            confirmation_id, approved)
+                    self._json(200 if resolved else 404,
+                               {"resolved": resolved})
+                elif self.path.startswith("/api/quarantine/"):
+                    if quarantine_resolve is None:
+                        self._json(409, {"error":
+                                         "no folder watch is running"})
+                        return
+                    quarantine_id = self.path.rsplit("/", 1)[-1]
+                    approved = bool(body.get("approve"))
+                    resolved = quarantine_resolve(quarantine_id, approved)
                     self._json(200 if resolved else 404,
                                {"resolved": resolved})
                 elif self.path == "/api/chat":

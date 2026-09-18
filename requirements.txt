@@ -2,16 +2,22 @@
 #
 #   pip install -r requirements.txt
 #
-# Python 3.10+ recommended.
+# Python >=3.10,<3.14. Prefer a project-local venv (see requirements-lock.txt
+# for an exact-version, resolved-clean set — regenerate it after any change
+# here rather than trusting a shared/global install).
 
 # Event kernel
 PyYAML>=6.0            # configuration files
 
 # Gesture perception module (vendored GestureSense library)
 mediapipe>=0.10.9      # hand tracking (legacy Solutions or Tasks backend)
-opencv-python==5.0.0.93 # camera capture + gesture debug overlay (full GUI build;
-                       # do NOT use opencv-python-headless — the debug window
-                       # needs GUI support, and mixing the two shadows cv2)
+opencv-contrib-python>=4.8.0 # camera capture + gesture debug overlay (full GUI
+                       # build; NOT opencv-python and NOT opencv-python-headless
+                       # — mediapipe>=1.0 hard-requires opencv-contrib-python
+                       # itself, so declaring a second cv2-providing package
+                       # here would install two wheels shadowing the same
+                       # `cv2` import, exactly the bug M18 Phase 1 fixed for
+                       # -headless, recurred here with a newer mediapipe)
 numpy>=1.24            # geometry and features
 
 # Optional

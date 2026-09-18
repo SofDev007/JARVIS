@@ -68,16 +68,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _console_reporter(event: Event) -> None:
-    """Human-readable event trace on stdout (the kernel's minimal 'UI')."""
-    if event.topic == Topics.CHAT_RESPONSE:
-        print(f"\nAssistant: {event.payload.get('text')}")
-        reasoning = event.payload.get("reasoning")
-        if reasoning:
-            print(f"  (reasoning: {reasoning})")
-        return
-    if event.topic == Topics.CHAT:
-        return  # the user just typed it; echoing is noise
-    print(f"  {event}")
+    """Human-readable event trace on stdout (the kernel's minimal 'UI').
+
+    Deliberately narrow: only the assistant's spoken reply. Everything else
+    (module lifecycle, action gating, raw event payloads) still goes to the
+    log file at INFO — see ``_VOICE_CONSOLE_LOGGERS`` in logging_setup.py
+    for the handful of voice-pipeline log lines (wake word, mic open/close,
+    heard text) that are also allowed through to the console.
+    """
+    print(f"\nAssistant: {event.payload.get('text')}")
+    reasoning = event.payload.get("reasoning")
+    if reasoning:
+        print(f"  (reasoning: {reasoning})")
 
 
 def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> ModuleRegistry:
@@ -198,6 +200,44 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
                 dash_memory = registry.get("memory")
             except Exception:
                 dash_memory = None
+
+        dash_knowledge_watch = None
+        if config.knowledge.enabled and config.knowledge.watch_paths:
+            try:
+                dash_knowledge_watch = registry.get("knowledge_watch")
+            except Exception:
+                dash_knowledge_watch = None
+
+        # M18 Phase 3: Device registry and device confirmation for mTLS
+        device_registry = None
+        device_confirmation = None
+        if config.automation.enabled:
+            from digital_twin.security.audit import build_audit_log
+            from digital_twin.security.device_identity import DeviceRegistry
+            audit = build_audit_log(config.security)
+            device_registry = DeviceRegistry(config.security.devices_dir, audit=audit)
+
+            # Check if any devices are enrolled
+            active_devices = device_registry.active_devices()
+            if active_devices:
+                logger.info("Device identity enabled: %d device(s) enrolled",
+                            len(active_devices))
+                # Use device confirmation for DANGEROUS actions
+                from digital_twin.security.device_confirmation import (
+                    DeviceConfirmationProvider,
+                )
+                device_confirmation = DeviceConfirmationProvider(
+                    device_registry,
+                    timeout_s=config.security.confirmation_timeout_s,
+                )
+                logger.info(
+                    "Device confirmation enabled — DANGEROUS actions require "
+                    "second-device approval")
+            else:
+                logger.info(
+                    "No devices enrolled — device identity disabled. Enroll with: "
+                    "python -m digital_twin.security.device_cli enroll --label 'device'")
+
         registry.register(DashboardModule(
             config.dashboard,
             registry,
@@ -209,9 +249,19 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
             plugin_reports=plugin_reports,
             app_config=config,
             frame_hub=frame_hub,
+            device_registry=device_registry,
+            device_confirmation=device_confirmation,
+            security_config=config.security,
+            knowledge_watch=dash_knowledge_watch,
         ))
         logger.info("Dashboard will listen on http://%s:%s",
                     config.dashboard.host, config.dashboard.port)
+    if config.airboard.enabled:
+        from digital_twin.airboard.module import AirboardModule
+
+        registry.register(AirboardModule(config.airboard))
+        logger.info("Air board will listen on http://%s:%s",
+                    config.airboard.host, config.airboard.port)
     if config.planner.enabled and config.automation.enabled:
         from digital_twin.planner.module import PlannerModule
 
@@ -252,6 +302,11 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
         synthesizer = SpeechSynthesizer(
             backend=config.voice.tts_backend,
             rate_wpm=config.voice.tts_rate_wpm,
+            piper_voice=config.voice.piper_voice,
+            piper_data_dir=config.voice.piper_data_dir,
+            jarvis_reference_wav=config.voice.jarvis_reference_wav,
+            jarvis_precache_dir=config.voice.jarvis_precache_dir,
+            precached_phrases=list(config.voice.precached_phrases),
         )
         if dispatcher is not None:
             register_voice_actions(dispatcher.registry, synthesizer)
@@ -261,7 +316,7 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
         if config.voice.wake_word.strip():
             from digital_twin.voice.wake import WakeWordModule
 
-            registry.register(WakeWordModule(config.voice))
+            registry.register(WakeWordModule(config.voice, synthesizer=synthesizer))
             logger.info("Wake word enabled: %r", config.voice.wake_word)
     if with_gesture:
         # Imported here so the kernel starts even without cv2/mediapipe.
@@ -298,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         slow_handler_warn_ms=config.bus.slow_handler_warn_ms,
     )
     bus.start()
-    bus.subscribe("*", _console_reporter, name="console")
+    bus.subscribe(Topics.CHAT_RESPONSE, _console_reporter, name="console")
 
     with_gesture = config.gesture.enabled and not args.no_gesture
     try:

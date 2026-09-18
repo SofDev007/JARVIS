@@ -137,11 +137,12 @@ class MemoryModule(BaseModule):
         tags: tuple[str, ...] = (),
         importance: float = 0.7,
         source: str = "user",
+        privacy_tier: str = "local_only",
     ) -> MemoryRecord:
         """Persist a semantic fact/preference (never auto-pruned)."""
         record = self.store.add(
             kind="semantic", content=content, source=source,
-            importance=importance, tags=tags,
+            importance=importance, tags=tags, privacy_tier=privacy_tier,
         )
         self._announce(record)
         return record

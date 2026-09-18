@@ -3,6 +3,102 @@
 All notable changes to the Digital Twin AI Assistant.
 Format follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased] — Milestone 25: Dependency supply chain hygiene
+
+### Added
+- **`requirements-lock.txt`**: exact-version dependency lock, generated
+  from a clean, project-only venv (deliberately *not* frozen from this
+  machine's shared global Python — see the file's own header for why:
+  that environment had Django, Flask, mysql-connector, a Jupyter stack,
+  and an unrelated project's package installed alongside this one).
+  Scoped to `[gesture,encryption,keyring,voice,tts,dev]`; `[browser]` and
+  `[semantic]` excluded (heavy, orthogonal, not used by default config)
+  and noted as such in the file.
+- `requires-python = ">=3.10,<3.14"` in `pyproject.toml` (was unbounded).
+  No CI actually exists in this repo despite an earlier CHANGELOG entry
+  claiming one — the bound was chosen to keep the Python version that
+  ran this milestone's own test suite (3.13) supported, not to match a
+  CI matrix that isn't there.
+- One `pip-audit` pass against the clean lock venv (ephemeral — not
+  added as a project dependency): no known vulnerabilities found across
+  the full locked set.
+
+### Fixed / Security
+- **A second live instance of the OpenCV conflict M18 Phase 1 fixed.**
+  Building the lockfile in a real clean venv (instead of trusting the
+  polluted global one) surfaced that `mediapipe>=1.0` now hard-requires
+  `opencv-contrib-python`, while `pyproject.toml`'s `gesture` extra also
+  declared `opencv-python` — installing both put two packages providing
+  the same `cv2` import on disk again, just with `-contrib-` instead of
+  `-headless` this time. Fixed by declaring `opencv-contrib-python`
+  instead of `opencv-python` in both `pyproject.toml` and
+  `requirements.txt`; confirmed a clean install now resolves to exactly
+  one `cv2` provider, and the full test suite (504/506, same 2
+  pre-existing unrelated failures) still passes under it.
+
+## [Unreleased] — Milestone 24: Adversarial plugin sandbox suite
+
+### Added
+- **Red-team test suite** for the subprocess plugin sandbox
+  (`tests/test_plugin_sandbox_redteam.py`, 5 tests): deliberate escape
+  attempts rather than functional exercise — environment inspection, a
+  raw-stdout protocol desync, an unresponsive child, and a
+  process-spawning grandchild. Closes THREAT_MODEL.md §4.7's "not
+  adversarially tested" residual.
+
+### Fixed / Security
+- **Environment variable leak** (`digital_twin/plugins/sandbox.py`):
+  `subprocess.Popen` with no `env=` inherited the parent's full
+  environment — a sandboxed plugin could read `os.environ["GEMINI_API_KEY"]`
+  (or any other secret set via the documented env-var fallback) directly,
+  contradicting the documented isolation claim. Fixed with `_child_env()`,
+  an explicit allowlist (PATH, SYSTEMROOT, TEMP, locale/encoding — nothing
+  secret-bearing); confirmed closed with a live repro before and after.
+- **Orphaned grandchild process** (`digital_twin/plugins/sandbox.py`): a
+  plugin that spawned its own subprocess and exited left that subprocess
+  running after `SandboxedPlugin.close()` — confirmed with a real PID
+  still alive post-close. Root cause was two-fold: (1) a bare
+  `Popen.kill()` only signals the immediate child on Windows, no
+  descendants — fixed with `_kill_tree()` (`taskkill /T /F` on Windows,
+  process-group kill via `start_new_session=True` on POSIX); (2) `close()`
+  used to send a polite `{"op": "shutdown"}` message and wait for a
+  graceful exit before falling back to a kill — but `taskkill /T` needs
+  the *parent* PID still alive to walk its process tree, so waiting for
+  graceful exit first always lost the race. Fixed by dropping the polite
+  handshake entirely: `close()` now sweeps immediately every time.
+
+## [Unreleased] — Milestone 23: Ingestion quarantine
+
+### Added
+- **Ingestion quarantine** (`digital_twin/knowledge/quarantine.py`,
+  `IngestionQuarantine`): the folder watcher no longer auto-ingests a new
+  or changed document — it extracts the text, checks it's not already in
+  the store (`KnowledgeStore.find_by_content_hash`, read-only), and
+  offers it for review instead of writing it in. The write only happens
+  on `KnowledgeWatchModule.approve(id)`, a human decision; `reject(id)`
+  discards it and remembers the content hash so it isn't re-offered every
+  scan. Closes THREAT_MODEL.md §4.1 control #5, explicitly scoped out of
+  M21.
+- **Dashboard panel**: `GET /api/quarantine` lists pending documents;
+  `POST /api/quarantine/<id>` `{"approve": true|false}` resolves one,
+  token-guarded like every other state-changing dashboard endpoint. Wired
+  through `DashboardModule`/`DashboardServer` exactly like the existing
+  confirmations panel, but with no timeout — a document sits until a
+  human looks at it, not until a clock runs out.
+- `KnowledgeStore.find_by_content_hash` / `compute_content_hash`: the
+  read-only half of `ingest`'s existing dedup check, factored out so a
+  caller can ask "would this be new content?" without writing anything.
+- 4 new tests in `tests/test_document_ingestion.py` (queue-not-ingest,
+  approve writes through, reject doesn't re-offer, unknown id refused)
+  and 1 in `tests/test_dashboard.py` (the endpoint end to end, including
+  the missing-token 403).
+
+### Changed
+- `KnowledgeWatchModule.scan_once()` now returns the count of newly
+  *queued* documents, not ingested ones — existing tests asserting
+  auto-ingest behavior were updated to the new approve/reject flow
+  (`digital_twin/knowledge/watch.py`'s docstring was updated to match).
+
 ## [Unreleased] — Milestone 18: ACL hardening & audit integrity
 
 ### Phase 1 — dependency and config repair (already landed)
@@ -105,6 +201,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com); versions follow S
 #### Threat model
 - `docs/THREAT_MODEL.md` §4.3 (audit-log integrity, asset A7) moved 🟡 → ✅.
   Threat-model updates now ship with each security milestone.
+
+### Phase 3 — mTLS dashboard & second-device confirmation
+
+#### Added
+- **mTLS on all dashboard endpoints** (`security/mtls_server.py`): every
+  endpoint — including GET and MJPEG stream — now requires a client
+  certificate from an enrolled device. This closes the camera-feed exposure
+  (§4.4): unauthenticated local processes can no longer read status or stream
+  the live camera.
+  - `create_mtls_context()` builds an `ssl.SSLContext` that loads the server's
+    self-signed cert/key and requires client certs verified against the trust
+    bundle of enrolled devices.
+  - `verify_client_cert()` checks the cert fingerprint against the registry
+    and rejects revoked devices.
+  - Server cert/key are generated on first use; the private key is
+    DPAPI-protected (same pattern as device keys).
+  - Trust bundle is rebuilt at startup from `active_cert_pems()`.
+- **Second-device confirmation for DANGEROUS actions**
+  (`security/device_confirmation.py`): a `DeviceConfirmationProvider` that
+  requires a *second* enrolled device to approve DANGEROUS actions. This
+  prevents a compromised phone from unilaterally approving destructive
+  actions.
+  - `request()` blocks until a different enrolled device approves, denies,
+    or timeout expires (fail-closed).
+  - `resolve()` accepts approval from any enrolled device except the one
+    that made the request (self-approval rejected).
+  - Revoked devices cannot approve.
+  - Non-enrolled devices cannot approve.
+- **Dashboard integration**: `DashboardModule` and `DashboardServer` now
+  accept `device_registry` and `device_confirmation` parameters. When devices
+  are enrolled, mTLS and device confirmation are enabled automatically.
+- **Kernel wiring** (`main.py`): device registry is created at startup when
+  dashboard is enabled; if devices are enrolled, device confirmation replaces
+  the web confirmation provider for DANGEROUS actions.
+- 6 new tests (`tests/test_mtls_device_confirmation.py`): mTLS context
+  creation with enrolled devices; device confirmation requires second device;
+  self-approval rejected; non-enrolled devices rejected; revoked devices
+  rejected; timeout denies.
+
+#### Threat model
+- `docs/THREAT_MODEL.md` §4.4 (unauthenticated camera stream, asset A6) moved
+  ❌ → ✅.
+- §4.5 (voice as authorization channel, asset A1) moved ❌ → ✅ — second-device
+  confirmation enforced in code.
+- Trust boundaries B5 (desktop ↔ phone) and B7 (identification ↔ authorization)
+  moved ⏳ → ✅.
 
 ### Debt / follow-ups (recorded, not done)
 - **Audit tail record.** The chain cannot detect mutation of the single last

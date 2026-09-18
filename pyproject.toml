@@ -23,7 +23,7 @@ name = "digital-twin-assistant"
 version = "0.17.0"
 description = "Modular, multimodal desktop AI assistant: gestures, chat, voice, screen OCR, files, plugins, browser — behind an event bus and hard permission gates."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "Vansh" }]
 dependencies = [
@@ -31,15 +31,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gesture = ["mediapipe>=0.10.9", "opencv-python>=4.8.0", "numpy>=1.24"]
+gesture = ["mediapipe>=0.10.9", "opencv-contrib-python>=4.8.0", "numpy>=1.24"]
+# opencv-contrib-python, not opencv-python: mediapipe (>=1.0) hard-requires
+# opencv-contrib-python, which is a strict superset of opencv-python and
+# provides the same `cv2` import — requiring opencv-python too installs a
+# SECOND package providing the same module (the exact class of bug M18
+# Phase 1 fixed for opencv-python-headless, recurred here with -contrib-
+# instead). One declared cv2 provider, matching what mediapipe actually
+# pulls in, so pip never has a reason to install two.
 encryption = ["cryptography>=41"]
 browser = ["playwright>=1.44"]
 keyring = ["keyring>=24"]
 semantic = ["sentence-transformers>=2.6"]
 voice = ["sounddevice>=0.4", "vosk>=0.3.45"]
+tts = ["piper-tts"]
+tts-jarvis = ["piper-tts", "coqui-tts", "torch", "torchaudio", "soundfile"]
 dev = ["pytest>=7.4"]
 all = [
-    "digital-twin-assistant[gesture,encryption,browser,keyring,voice,semantic,dev]",
+    "digital-twin-assistant[gesture,encryption,browser,keyring,voice,tts,semantic,dev]",
 ]
 
 [project.scripts]
@@ -49,12 +58,18 @@ digital-twin-memory = "digital_twin.memory.cli:main"
 digital-twin-secrets = "digital_twin.security.secrets_cli:main"
 digital-twin-audit = "digital_twin.security.audit_cli:main"
 digital-twin-device = "digital_twin.security.device_cli:main"
+digital-twin-airboard = "digital_twin.airboard.run:main"
+digital-twin-board = "digital_twin.airboard.cli_board:main"
+digital-twin-board-state = "digital_twin.airboard.cli_board_state:main"
 
 [tool.setuptools]
 py-modules = ["main"]
 
 [tool.setuptools.packages.find]
 include = ["digital_twin*", "gesturesense*"]
+
+[tool.setuptools.package-data]
+"digital_twin.airboard" = ["static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

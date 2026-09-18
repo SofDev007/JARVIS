@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
@@ -68,27 +69,34 @@ class LanguageModel(ABC):
         """Return the assistant's reply text for the conversation so far."""
 
 
-def _post_json(url: str, body: dict, headers: dict, timeout_s: float) -> dict:
+def _post_json(url: str, body: dict, headers: dict, timeout_s: float,
+                retries: int = 1, backoff_s: float = 1.5) -> dict:
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
         headers={"content-type": "application/json", **headers},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = ""
+    for attempt in range(retries + 1):
         try:
-            detail = exc.read().decode("utf-8")[:300]
-        except Exception:
-            pass
-        raise LLMError(f"{url} returned HTTP {exc.code}: {detail}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise LLMError(f"Could not reach {url}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise LLMError(f"{url} returned invalid JSON") from exc
+            with urllib.request.urlopen(request, timeout=timeout_s) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8")[:300]
+            except Exception:
+                pass
+            raise LLMError(f"{url} returned HTTP {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if attempt < retries:
+                logger.warning("LLM request to %s failed (%s), retrying...",
+                                url, exc)
+                time.sleep(backoff_s)
+                continue
+            raise LLMError(f"Could not reach {url}: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"{url} returned invalid JSON") from exc
 
 
 class AnthropicModel(LanguageModel):

@@ -1,24 +1,33 @@
-"""Folder watcher — auto-ingest documents that appear in watched dirs.
+"""Folder watcher — notices documents in watched dirs and queues new/
+changed ones for human review before they enter the RAG corpus.
 
 A plain :class:`BaseModule` (start/stop/pause like everything else) that
-polls `knowledge.watch_paths` on a timer and ingests supported files it
-has not already seen at their current content. The heavy lifting —
-extraction, chunking, embedding, idempotence — belongs to the store and
-the extractor; this module only *notices* files and hands them over,
-then announces what it did on the event bus.
+polls `knowledge.watch_paths` on a timer, extracts text from supported
+files, and — for anything whose content isn't already in the store —
+offers it to an :class:`IngestionQuarantine` instead of writing it
+straight in. The write only happens when a human calls :meth:`approve`
+(THREAT_MODEL.md §4.1 control #5: watching a directory is standing
+consent to *notice* files, not to admit their content into the corpus
+unattended). The heavy lifting — extraction, chunking, embedding,
+dedup-by-content-hash — belongs to the store and the extractor; this
+module notices files, holds candidates for review, and announces what
+happened on the event bus.
 
 Safety follows the file-action model exactly: every watched directory
 must resolve inside `files.allowed_roots` (validated at construction; an
 out-of-bounds watch path is dropped with a warning, never silently
 honored), and only known-supported suffixes are touched. Idempotence is
-the store's content hash, so a rescan of unchanged files does nothing —
-the watcher can poll cheaply forever.
+the store's content hash, so a rescan of unchanged (or already-approved,
+or already-rejected) content offers nothing new — the watcher can poll
+cheaply forever.
 
-The watcher does not go through the permission gate per file: watching a
-directory *is* the standing consent, declared once in config, exactly as
-`open_application`'s allow-list or `files.allowed_roots` are. Each
-ingest is still audited by the store, and nothing here can write, move
-or delete a user file — it only reads.
+The watcher does not go through the dispatcher's per-action confirmation
+gate: that gate blocks a worker on a short timeout and denies by default
+when nobody answers, which is the wrong shape for "a document found at
+3am should still be here to review at 9am". The quarantine queue is a
+deliberately different, un-timed primitive for that reason. Nothing here
+can write, move or delete a user file — it only reads, and only ever
+writes to the knowledge store, and only once approved.
 """
 
 from __future__ import annotations
@@ -36,7 +45,8 @@ from digital_twin.knowledge.extraction import (
     extract_text,
     is_supported,
 )
-from digital_twin.knowledge.store import KnowledgeStore
+from digital_twin.knowledge.quarantine import IngestionQuarantine
+from digital_twin.knowledge.store import KnowledgeStore, compute_content_hash
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +62,11 @@ class KnowledgeWatchModule(BaseModule):
         super().__init__()
         self._config = knowledge
         self._store = store
+        self._quarantine = IngestionQuarantine()
         self._interval = knowledge.watch_interval_s
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._ingested_last = 0
+        self._queued_last = 0
 
         roots = resolve_roots(files.allowed_roots)
         self._dirs: list[Path] = []
@@ -99,12 +110,13 @@ class KnowledgeWatchModule(BaseModule):
             self._stop.wait(self._interval)
 
     def scan_once(self) -> int:
-        """Scan every watched dir once; return how many files were ingested.
+        """Scan every watched dir once; return how many files were newly
+        queued for review (not ingested — see :meth:`approve`).
 
         Exposed (not just the loop calls it) so tests and the dashboard
         can trigger a deterministic scan.
         """
-        ingested = 0
+        queued = 0
         for directory in self._dirs:
             if not directory.is_dir():
                 continue
@@ -113,33 +125,62 @@ class KnowledgeWatchModule(BaseModule):
                     break
                 if not path.is_file() or not is_supported(path):
                     continue
-                if self._ingest(path):
-                    ingested += 1
-        self._ingested_last = ingested
-        if ingested:
-            logger.info("knowledge watch ingested %d file(s)", ingested)
-        return ingested
+                if self._consider(path):
+                    queued += 1
+        self._queued_last = queued
+        if queued:
+            logger.info("knowledge watch queued %d file(s) for review", queued)
+        return queued
 
-    def _ingest(self, path: Path) -> bool:
+    def _consider(self, path: Path) -> bool:
+        """Extract text and, if its content isn't already in the store,
+        offer it to the quarantine. Never writes to the store itself."""
         try:
             text = extract_text(path)
         except (ExtractionError, OSError) as exc:
             logger.warning("watch: skipping %s (%s)", path.name, exc)
             return False
-        try:
-            doc_id, chunks, created = self._store.ingest(
-                title=path.name, text=text, source=str(path),
-                replace_source=True)
-        except Exception as exc:
-            logger.warning("watch: ingest failed for %s (%s)", path.name, exc)
+        if self._store.find_by_content_hash(text) is not None:
+            return False  # identical content already ingested — no-op
+        content_hash = compute_content_hash(text)
+        quarantine_id = self._quarantine.offer(
+            title=path.name, source=str(path), text=text,
+            content_hash=content_hash)
+        if quarantine_id is None:
+            return False  # already pending, or previously rejected
+        if self._bus is not None:
+            self._bus.publish(Event(
+                topic=Topics.MODULE, source=self.name,
+                payload={"event": "quarantined", "title": path.name,
+                         "id": quarantine_id}))
+        return True
+
+    # ------------------------------------------------------------------
+    # Human review — the dashboard (or a test) drives these.
+    def pending(self) -> list[dict]:
+        """Documents currently waiting for an approve/reject decision."""
+        return self._quarantine.pending()
+
+    def approve(self, quarantine_id: str) -> bool:
+        """Write a pending document to the store. ``False`` if unknown."""
+        entry = self._quarantine.pop(quarantine_id)
+        if entry is None:
             return False
+        doc_id, chunks, created = self._store.ingest(
+            title=entry.title, text=entry.text, source=entry.source,
+            replace_source=True)
         if created and self._bus is not None:
             self._bus.publish(Event(
                 topic=Topics.MODULE, source=self.name,
-                payload={"event": "ingested", "title": path.name,
+                payload={"event": "ingested", "title": entry.title,
                          "doc_id": doc_id, "chunks": chunks}))
-        return created
+        return True
+
+    def reject(self, quarantine_id: str) -> bool:
+        """Discard a pending document; its content won't be re-offered."""
+        return self._quarantine.reject(quarantine_id)
 
     def _metrics(self) -> dict:
         return {"watched_dirs": len(self._dirs),
-                "last_scan_ingested": self._ingested_last}
+                "last_scan_queued": self._queued_last,
+                "pending_review": len(self._quarantine.pending())}

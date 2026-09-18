@@ -7,11 +7,15 @@ can *mute the assistant* with one permission rule
 in plans without any special casing. The synthesizer instance is shared
 with the voice module (kernel-level composition) so barge-in interruption
 can kill an utterance the action started.
+
+The ``source`` parameter routes to the appropriate TTS backend:
+* ``source="system"``: check Jarvis pre-cache first (for hardcoded system phrases)
+* ``source="chat"``: always use Piper directly (for LLM-generated replies)
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from digital_twin.automation.registry import ActionRegistry, ActionSpec
 from digital_twin.security.permissions import RiskLevel
@@ -33,9 +37,14 @@ def register_voice_actions(
             raise ValueError(f"speak: text exceeds {MAX_SPEAK_CHARS} characters")
         if any(ord(ch) < 32 and ch not in "\t " for ch in text):
             raise ValueError("speak: control characters are not allowed")
+        source = params.get("source")
+        if source is not None and source not in ("system", "chat"):
+            raise ValueError("speak: source must be 'system' or 'chat'")
 
     def handle_speak(params: Mapping[str, Any]) -> str:
-        return synthesizer.speak(str(params["text"]).strip())
+        text = str(params["text"]).strip()
+        source: Literal["system", "chat"] = params.get("source", "chat")
+        return synthesizer.speak(text, source=source)
 
     registry.register(ActionSpec(
         name="speak",

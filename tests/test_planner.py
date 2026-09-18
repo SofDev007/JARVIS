@@ -337,6 +337,43 @@ def test_successful_llm_plan_is_saved_and_replayable_as_skill(bus, tmp_path):
         memory.stop()
 
 
+def test_llm_plan_tainted_flag_carries_to_every_step(bus, tmp_path):
+    """THREAT_MODEL.md §4.1: a PLAN_REQUEST's ``tainted`` flag must survive
+    the hop into each step's republished ACTION_EXECUTE event. Tainted SAFE
+    steps now require confirmation (§4.1's ALLOW-escalation rule), so this
+    rig needs queued answers where the untainted rig above didn't."""
+    rig = Rig(bus, tmp_path, answers=[True, True])
+    executes: list[Event] = []
+    bus.subscribe(Topics.ACTION_EXECUTE, executes.append)
+    try:
+        bus.publish(Event(Topics.PLAN_REQUEST, "reasoner", {
+            "goal": "tainted plan",
+            "steps": [{"action": "alpha", "label": "one"},
+                      {"action": "beta", "label": "two"}],
+            "tainted": True,
+        }))
+        assert _wait(lambda: "completed" in rig.statuses())
+        assert len(executes) == 2
+        assert all(event.payload["tainted"] is True for event in executes)
+    finally:
+        rig.stop()
+
+
+def test_llm_plan_untainted_flag_defaults_false(bus, tmp_path):
+    rig = Rig(bus, tmp_path)
+    executes: list[Event] = []
+    bus.subscribe(Topics.ACTION_EXECUTE, executes.append)
+    try:
+        bus.publish(Event(Topics.PLAN_REQUEST, "reasoner", {
+            "goal": "untainted plan",
+            "steps": [{"action": "alpha", "label": "one"}],
+        }))
+        assert _wait(lambda: "completed" in rig.statuses())
+        assert executes and executes[0].payload["tainted"] is False
+    finally:
+        rig.stop()
+
+
 def test_skill_request_without_match_fails_cleanly(bus, tmp_path):
     memory = MemoryModule(MemoryConfig(db_path=str(tmp_path / "m.db")))
     memory.start(bus)

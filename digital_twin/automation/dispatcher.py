@@ -200,7 +200,8 @@ class ActionDispatcher(BaseModule):
                      "params": dict(params), "risk": spec.risk.value},
         ))
 
-        decision = self._policy.evaluate(spec.name, spec.risk)
+        decision = self._policy.evaluate(
+            spec.name, spec.risk, tainted=bool(event.payload.get("tainted", False)))
         if decision is Decision.DENY:
             self._finish(event, action=spec.name, status="denied",
                          detail="permission policy", params=params)
@@ -241,7 +242,8 @@ class ActionDispatcher(BaseModule):
                      **self._plan_fields(event)},
         ))
 
-        decision = self._policy.evaluate(spec.name, spec.risk)
+        decision = self._policy.evaluate(
+            spec.name, spec.risk, tainted=bool(event.payload.get("tainted", False)))
         if decision is Decision.DENY:
             self._finish(event, action=spec.name, status="denied",
                          detail="permission policy", params=params)
@@ -263,10 +265,29 @@ class ActionDispatcher(BaseModule):
     # ------------------------------------------------------------------
     def _confirm(self, event: Event, spec: ActionSpec, params: Mapping[str, Any]) -> bool:
         self._publish_confirmation(spec.name, "pending")
+        tainted = bool(event.payload.get("tainted", False))
         try:
-            approved = self._confirmation.request(
-                spec.name, params, self._confirm_timeout
-            )
+            # M18 Phase 3: DANGEROUS actions require second-device confirmation
+            # when the device confirmation provider is configured.
+            # The regular confirmation provider handles SAFE/SENSITIVE.
+            if spec.risk.value == "dangerous" and hasattr(self._confirmation, 'request'):
+                # Check if this is a DeviceConfirmationProvider (has request with risk param)
+                import inspect
+                sig = inspect.signature(self._confirmation.request)
+                if 'risk' in sig.parameters:
+                    approved = self._confirmation.request(
+                        spec.name, params, self._confirm_timeout,
+                        requesting_device=getattr(self, '_current_device', None),
+                        risk=spec.risk.value,
+                    )
+                else:
+                    approved = self._confirmation.request(
+                        spec.name, params, self._confirm_timeout
+                    )
+            else:
+                approved = self._confirmation.request(
+                    spec.name, params, self._confirm_timeout, tainted=tainted
+                )
         except Exception:
             logger.exception("Confirmation provider failed; denying")
             approved = False

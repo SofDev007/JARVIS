@@ -33,8 +33,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from digital_twin.knowledge.embedding import Embedder, cosine
+from digital_twin.security.privacy import PrivacyTier
 
 logger = logging.getLogger(__name__)
+_PRIVACY_TIERS = {tier.value for tier in PrivacyTier}
 
 
 class KnowledgeError(RuntimeError):
@@ -50,6 +52,7 @@ class DocumentInfo:
     source: str
     chunks: int
     created_at: float
+    privacy_tier: str
 
 
 @dataclass(frozen=True)
@@ -62,8 +65,13 @@ class KnowledgeHit:
     position: int
     content: str
     score: float
+    privacy_tier: str
 
 
+# M20: privacy_tier defaults to 'local_only' at the schema level too (see
+# digital_twin/memory/store.py for the same rationale). No migration path
+# exists in this codebase — an existing knowledge.db predating M20 needs
+# deleting to pick up the new column.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -74,7 +82,8 @@ CREATE TABLE IF NOT EXISTS documents (
     title TEXT NOT NULL,
     source TEXT NOT NULL,
     content_hash TEXT NOT NULL UNIQUE,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    privacy_tier TEXT NOT NULL DEFAULT 'local_only'
 );
 CREATE TABLE IF NOT EXISTS chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,6 +131,13 @@ def chunk_text(text: str, chunk_chars: int, overlap: int) -> list[str]:
     return chunks
 
 
+def compute_content_hash(text: str) -> str:
+    """The same hash :meth:`KnowledgeStore.ingest` dedupes on — exposed so
+    a caller (the ingestion quarantine) can check "would this be new
+    content?" before deciding whether to write anything."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 class KnowledgeStore:
     """Thread-safe SQLite-backed document/chunk/vector store."""
 
@@ -165,7 +181,8 @@ class KnowledgeStore:
 
     # ------------------------------------------------------------------
     def ingest(self, title: str, text: str, source: str = "chat",
-               replace_source: bool = False) -> tuple[int, int, bool]:
+               replace_source: bool = False,
+               privacy_tier: str = "local_only") -> tuple[int, int, bool]:
         """Store one document; returns ``(doc_id, chunk_count, created)``.
 
         Idempotent: identical content returns the existing document.
@@ -174,12 +191,20 @@ class KnowledgeStore:
         edited file replaces its previous version instead of leaving
         stale chunks recallable beside the new ones. Chat-sourced notes
         never set this: distinct notes legitimately accumulate.
+
+        ``privacy_tier`` defaults to ``local_only`` (THREAT_MODEL.md §4.8) —
+        cloud-eligible content requires an explicit opt-in via the
+        ``ingest_document``/``ingest_text`` action params, both of which are
+        already human-confirmed (SENSITIVE risk).
         """
         title = (title or "untitled").strip()[:200]
         text = (text or "").strip()
         if not text:
             raise ValueError("cannot ingest empty text")
-        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if privacy_tier not in _PRIVACY_TIERS:
+            raise ValueError(
+                f"privacy_tier must be one of {_PRIVACY_TIERS}, got {privacy_tier!r}")
+        content_hash = compute_content_hash(text)
         with self._lock:
             row = self._connection.execute(
                 "SELECT id, (SELECT COUNT(*) FROM chunks WHERE doc_id = documents.id) "
@@ -200,9 +225,9 @@ class KnowledgeStore:
                     logger.info("Replacing %d stale version(s) of %s",
                                 len(stale), source)
             cursor = self._connection.execute(
-                "INSERT INTO documents (title, source, content_hash, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (title, source, content_hash, time.time()))
+                "INSERT INTO documents (title, source, content_hash, created_at, privacy_tier) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (title, source, content_hash, time.time(), privacy_tier))
             doc_id = cursor.lastrowid
             chunks = chunk_text(text, self._chunk_chars, self._overlap)
             for position, content in enumerate(chunks):
@@ -216,6 +241,19 @@ class KnowledgeStore:
                     source)
         return doc_id, len(chunks), True
 
+    def find_by_content_hash(self, text: str) -> tuple[int, int] | None:
+        """Read-only: ``(doc_id, chunk_count)`` if this exact content is
+        already stored, else ``None``. Never writes — lets a caller (the
+        ingestion quarantine) decide whether something is worth queuing
+        for review without committing it first."""
+        content_hash = compute_content_hash(text)
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT id, (SELECT COUNT(*) FROM chunks WHERE doc_id = documents.id) "
+                "FROM documents WHERE content_hash = ?",
+                (content_hash,)).fetchone()
+        return (row[0], row[1]) if row is not None else None
+
     def search(self, query: str, top_k: int = 3,
                min_score: float = 0.1) -> list[KnowledgeHit]:
         """Rank all chunks by cosine similarity to ``query``."""
@@ -226,23 +264,25 @@ class KnowledgeStore:
         with self._lock:
             rows = self._connection.execute(
                 "SELECT c.doc_id, d.title, d.source, c.position, c.content, "
-                "c.embedding FROM chunks c JOIN documents d ON d.id = c.doc_id"
+                "c.embedding, d.privacy_tier "
+                "FROM chunks c JOIN documents d ON d.id = c.doc_id"
             ).fetchall()
         hits: list[KnowledgeHit] = []
-        for doc_id, title, source, position, content, blob in rows:
+        for doc_id, title, source, position, content, blob, privacy_tier in rows:
             vector = array("f")
             vector.frombytes(blob)
             score = cosine(query_vector, list(vector))
             if score >= min_score:
                 hits.append(KnowledgeHit(doc_id, title, source, position,
-                                         content, round(score, 4)))
+                                         content, round(score, 4), privacy_tier))
         hits.sort(key=lambda hit: hit.score, reverse=True)
         return hits[:max(1, top_k)]
 
     def documents(self) -> list[DocumentInfo]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT d.id, d.title, d.source, COUNT(c.id), d.created_at "
+                "SELECT d.id, d.title, d.source, COUNT(c.id), d.created_at, "
+                "d.privacy_tier "
                 "FROM documents d LEFT JOIN chunks c ON c.doc_id = d.id "
                 "GROUP BY d.id ORDER BY d.created_at DESC").fetchall()
         return [DocumentInfo(*row) for row in rows]
