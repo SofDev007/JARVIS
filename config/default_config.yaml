@@ -120,6 +120,7 @@ dashboard:
   host: 127.0.0.1              # loopback only unless allow_remote: true
   port: 8787                   # http://127.0.0.1:8787 (0 = ephemeral)
   allow_remote: false          # binding beyond loopback is an explicit act
+  remote_hosts: []             # with allow_remote: extra host names browsers may use
   recent_events: 200           # live event feed ring buffer
   # Set security.confirmation: web to approve/deny actions in the
   # dashboard instead of the terminal — this resolves the stdin conflict

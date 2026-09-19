@@ -83,6 +83,7 @@ class AirboardModule(BaseModule):
             state_dir=self._config.state_dir,
             state_timeout_s=self._config.state_timeout_s,
             allow_remote=self._config.allow_remote,
+            remote_hosts=tuple(self._config.remote_hosts),
             on_perception=self.on_perception,
             orb_source=self.orb_view,
         )

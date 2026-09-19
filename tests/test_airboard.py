@@ -392,3 +392,26 @@ def test_orb_endpoint_prefers_live_state_over_files(bus, board, tmp_path):
     assert json.loads(_get(board.port, "/orb")[1])["state"] == "listening"
     _pub(bus, Topics.CHAT_RESPONSE, text="Hello there.")
     assert json.loads(_get(board.port, "/orb")[1])["state"] == "speaking"
+
+
+def test_allow_remote_keeps_the_host_and_origin_allowlist(tmp_path):
+    """allow_remote must not open the door to DNS rebinding: a page on
+    evil.example (rebound to this server) sends Host = its own name and a
+    matching Origin; only the configured names may pass."""
+    srv = AirboardServer(
+        "127.0.0.1", 0, name="Test", orbs=[], media_dir=str(tmp_path / "m"),
+        state_dir=str(tmp_path / "s"), state_timeout_s=600,
+        allow_remote=True, remote_hosts=("board.tailnet",))
+    srv.start()
+    try:
+        port = srv.port
+        evil = {"Host": f"evil.example:{port}", "Origin": f"http://evil.example:{port}"}
+        assert _post(port, "/state", b"{}", evil)[0] == 403
+        assert _get(port, "/config", {"Host": f"evil.example:{port}"})[0] == 403
+        ok = {"Host": f"board.tailnet:{port}", "Origin": f"http://board.tailnet:{port}"}
+        assert _post(port, "/state", b"{}", ok)[0] == 200
+        # an allowed Host with a foreign Origin is still refused
+        mixed = {"Host": f"board.tailnet:{port}", "Origin": f"http://evil.example:{port}"}
+        assert _post(port, "/state", b"{}", mixed)[0] == 403
+    finally:
+        srv.stop()

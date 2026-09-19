@@ -78,6 +78,7 @@ def test_missing_and_malformed_files_fall_back(tmp_path, caplog):
         "airboard:\n  repeat_interval_s: -1\n",
         "airboard:\n  gesture_thresholds: {thumbs_up: 1.5}\n",
         "airboard:\n  disabled_gestures: ['']\n",
+        "airboard:\n  remote_hosts: ['board.tailnet:8794']\n",
         "intent:\n  default_context: ''\n",
         "intent:\n  mappings:\n    media: not_a_table\n",
         "intent:\n  mappings:\n    media:\n      peace: 7\n",

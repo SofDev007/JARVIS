@@ -22,13 +22,15 @@ local-only tool, there is no token/auth layer):
   else is a 400 with no detail leaked.
 * **No CORS headers are ever sent** — cross-origin browser reads are
   blocked by default same-origin policy.
-* **Host allowlist** (loopback binds): every request must name this server
-  as ``127.0.0.1``/``localhost``/``[::1]`` + its port, so a DNS-rebinding
-  page can neither read notes nor POST.
-* **Origin check on POST**: a present ``Origin`` must equal this server's
-  own origin. Browsers always send it cross-site, so no web page can forge
-  a heartbeat (which now carries gestures that become JARVIS intents) or a
-  board command; local CLI tools send no Origin and keep working.
+* **Host allowlist** on every request: the ``Host`` header must name this
+  server as ``127.0.0.1``/``localhost``/``[::1]`` + its port — plus, only
+  with ``allow_remote``, the bind host and ``airboard.remote_hosts`` — so a
+  DNS-rebinding page can neither read notes nor POST.
+* **Origin check on POST**: a present ``Origin`` must be ``http://`` + one of
+  those same allowed hosts (never the request's own ``Host``). Browsers
+  always send it cross-site, so no web page can forge a heartbeat (which
+  carries gestures that become JARVIS intents) or a board command; local
+  CLI tools send no Origin and keep working.
 
 Endpoints::
 
@@ -129,11 +131,16 @@ class AirboardServer:
         state_dir: str,
         state_timeout_s: int,
         allow_remote: bool = False,
+        remote_hosts: tuple[str, ...] = (),
         on_perception: PerceptionCallback | None = None,
         orb_source: Callable[[], dict] | None = None,
     ):
         self._name = name
-        self._allow_remote = allow_remote
+        # Names a browser may use to reach this server. Loopback always;
+        # with allow_remote, also the bind host and the operator's explicit
+        # remote_hosts. Never derived from a request (DNS rebinding).
+        self._host_names = ("127.0.0.1", "localhost", "[::1]") + (
+            (host, *remote_hosts) if allow_remote else ())
         self._on_perception = on_perception
         self._orb_source = orb_source
         self._orbs = orbs
@@ -175,11 +182,14 @@ class AirboardServer:
                            "application/json")
 
             def _refused(self, post: bool) -> bool:
-                """Host allowlist + POST Origin check; sends the 403 itself."""
-                host = self.headers.get("Host", "")
-                ok = outer._allow_remote or host in outer._local_hosts()
+                """Host allowlist + POST Origin check; sends the 403 itself.
+                Both compare against a fixed set, never against the request's
+                own Host header."""
+                allowed = outer._allowed_hosts()
+                ok = self.headers.get("Host", "") in allowed
                 origin = self.headers.get("Origin")
-                if post and origin is not None and origin != f"http://{host}":
+                if post and origin is not None and \
+                        origin not in {f"http://{h}" for h in allowed}:
                     ok = False
                 if not ok:
                     self._json(403, {"error": "forbidden"})
@@ -247,9 +257,9 @@ class AirboardServer:
     # ------------------------------------------------------------------
     # Endpoint bodies (kept off the Handler so they're testable directly)
     # ------------------------------------------------------------------
-    def _local_hosts(self) -> tuple[str, ...]:
+    def _allowed_hosts(self) -> set[str]:
         port = self.port
-        return (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}")
+        return {f"{name}:{port}" for name in self._host_names}
 
     def _deliver_perception(self, body: bytes) -> None:
         if self._on_perception is None:

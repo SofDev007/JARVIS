@@ -444,13 +444,19 @@ reach it with a CORS "simple request" (`text/plain` POST needs no
 preflight), and a DNS-rebinding page could also read notes via `GET /note`.
 
 **Controls:**
-- **Host allowlist** on every request (loopback binds): `Host` must be
-  `127.0.0.1|localhost|[::1]:<port>`. Defeats DNS rebinding for reads and
-  writes.
-- **Origin check** on every POST: a present `Origin` must equal the
-  server's own origin. Browsers always send `Origin` cross-site, so no page
-  can forge a heartbeat or a `/cmd`. Origin-less clients (the local CLI
-  tools) still work, by design.
+- **Host allowlist** on every request: `Host` must be
+  `127.0.0.1|localhost|[::1]:<port>` — plus, only with `allow_remote`, the
+  bind host and the operator's explicit `airboard.remote_hosts`. Defeats DNS
+  rebinding for reads and writes.
+- **Origin check** on every POST: a present `Origin` must be `http://` +
+  one of those same allowed hosts. Browsers always send `Origin` cross-site,
+  so no page can forge a heartbeat or a `/cmd`. Origin-less clients (the
+  local CLI tools) still work, by design.
+- *Phase 4 review fix:* the first version skipped the Host check entirely
+  under `allow_remote` and compared `Origin` with the request's own `Host`,
+  so a rebinding page (Origin `http://evil:8794`, Host `evil:8794`) passed
+  both. Both checks now use the fixed allowlist, never request headers
+  (`test_allow_remote_keeps_the_host_and_origin_allowlist`).
 - **Strict payload validation** (`parse_perception`): ≤2 hands from
   {left,right}, ids `^[a-z0-9_]{1,40}$`, finite confidence in [0,1]; a bad
   frame is dropped whole. Gesture events still pass through the dispatcher's

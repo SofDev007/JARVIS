@@ -282,6 +282,10 @@ class AirboardConfig:
     """TCP port (0 = ephemeral, mainly for tests)."""
     allow_remote: bool = False
     """Permit binding non-loopback hosts. Off by default on purpose."""
+    remote_hosts: list[str] = field(default_factory=list)
+    """With ``allow_remote``: extra host names (no port) a browser may use
+    to reach the board, e.g. a tailnet name. Requests naming any other host
+    are refused, which is what keeps DNS rebinding out."""
     name: str = "JARVIS"
     """Shown in the page UI; has no security meaning."""
     state_timeout_s: int = 600
@@ -885,6 +889,10 @@ def _validate(config: AppConfig) -> AppConfig:
          or str(airboard.host) in ("127.0.0.1", "localhost", "::1"),
          "airboard.host must be loopback unless airboard.allow_remote is "
          "true"),
+        (isinstance(airboard.remote_hosts, list)
+         and all(isinstance(h, str) and h and ":" not in h and "/" not in h
+                 for h in airboard.remote_hosts),
+         "airboard.remote_hosts must be a list of host names without ports"),
         (airboard.state_timeout_s > 0,
          "airboard.state_timeout_s must be > 0"),
         (bool(str(airboard.state_dir).strip()),
