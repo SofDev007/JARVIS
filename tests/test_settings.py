@@ -13,7 +13,7 @@ from digital_twin.configuration.settings import AppConfig, load_config
 def test_defaults_load_without_file():
     config = load_config(None)
     assert isinstance(config, AppConfig)
-    assert config.gesture.enabled is True
+    assert config.airboard.enabled is False
     assert config.intent.default_context == "desktop"
     assert config.bus.max_queue_size == 1024
     assert config.llm.screen_cloud_ok is False
@@ -22,19 +22,19 @@ def test_defaults_load_without_file():
 def test_yaml_overrides_subset(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(
-        "gesture:\n"
-        "  camera_index: 2\n"
+        "airboard:\n"
+        "  port: 9000\n"
         "  repeat_interval_s: 1.5\n"
         "intent:\n"
         "  default_context: media\n",
         encoding="utf-8",
     )
     config = load_config(path)
-    assert config.gesture.camera_index == 2
-    assert config.gesture.repeat_interval_s == 1.5
+    assert config.airboard.port == 9000
+    assert config.airboard.repeat_interval_s == 1.5
     assert config.intent.default_context == "media"
     # Untouched values keep their defaults.
-    assert config.gesture.frame_width == 1280
+    assert config.airboard.host == "127.0.0.1"
     assert config.bus.max_queue_size == 1024
 
 
@@ -53,18 +53,18 @@ def test_intent_mappings_replaced_whole(tmp_path):
 
 def test_unknown_key_warns_but_does_not_crash(tmp_path, caplog):
     path = tmp_path / "config.yaml"
-    path.write_text("gesture:\n  camera_indx: 2\n", encoding="utf-8")
+    path.write_text("airboard:\n  prot: 9000\n", encoding="utf-8")
     with caplog.at_level(logging.WARNING):
         config = load_config(path)
-    assert config.gesture.camera_index == 0  # typo ignored, default kept
-    assert any("camera_indx" in record.message for record in caplog.records)
+    assert config.airboard.port == 8794  # typo ignored, default kept
+    assert any("prot" in record.message for record in caplog.records)
 
 
 def test_missing_and_malformed_files_fall_back(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         assert load_config(tmp_path / "nope.yaml") == AppConfig()
     bad = tmp_path / "bad.yaml"
-    bad.write_text("gesture: [unclosed\n", encoding="utf-8")
+    bad.write_text("airboard: [unclosed\n", encoding="utf-8")
     with caplog.at_level(logging.ERROR):
         assert load_config(bad) == AppConfig()
 
@@ -73,11 +73,11 @@ def test_missing_and_malformed_files_fall_back(tmp_path, caplog):
     "yaml_text",
     [
         "bus:\n  max_queue_size: 0\n",
-        "gesture:\n  detection_confidence: 1.5\n",
-        "gesture:\n  max_hands: 9\n",
-        "gesture:\n  min_votes: 99\n",
-        "gesture:\n  poll_interval_s: 0\n",
-        "gesture:\n  repeat_interval_s: -1\n",
+        "airboard:\n  port: 70000\n",
+        "airboard:\n  host: 0.0.0.0\n",
+        "airboard:\n  repeat_interval_s: -1\n",
+        "airboard:\n  gesture_thresholds: {thumbs_up: 1.5}\n",
+        "airboard:\n  disabled_gestures: ['']\n",
         "intent:\n  default_context: ''\n",
         "intent:\n  mappings:\n    media: not_a_table\n",
         "intent:\n  mappings:\n    media:\n      peace: 7\n",
@@ -111,3 +111,35 @@ def test_shipped_default_config_matches_dataclass_defaults():
     shipped = Path(__file__).parent.parent / "config" / "default_config.yaml"
     assert shipped.exists()
     assert load_config(shipped) == AppConfig()
+
+
+_PROFILES = (
+    "profiles:\n"
+    "  active: {active}\n"
+    "  available:\n"
+    "    tuned:\n"
+    "      airboard: {{repeat_interval_s: 0.8, disabled_gestures: [finger_gun]}}\n"
+    "      intent: {{default_context: coding}}\n"
+    "    rogue:\n"
+    "      airboard: {{host: 0.0.0.0, allow_remote: true}}\n"
+    "    legacy:\n"
+    "      gesture: {{repeat_interval_s: 0.8}}\n"
+)
+
+
+def test_profile_overrides_gesture_calibration_and_intent(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(_PROFILES.format(active="tuned"), encoding="utf-8")
+    config = load_config(path)
+    assert config.airboard.repeat_interval_s == 0.8
+    assert config.airboard.disabled_gestures == ["finger_gun"]
+    assert config.intent.default_context == "coding"
+
+
+@pytest.mark.parametrize("profile", ["rogue", "legacy"])
+def test_profile_cannot_touch_board_server_or_removed_sections(tmp_path, profile):
+    """A profile tunes gestures; it must never re-bind the board's server."""
+    path = tmp_path / "config.yaml"
+    path.write_text(_PROFILES.format(active="default"), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_config(path, profile=profile)

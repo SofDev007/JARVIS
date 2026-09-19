@@ -21,7 +21,7 @@ from digital_twin.configuration.settings import IntentConfig
 from digital_twin.core.bus import Subscription
 from digital_twin.core.events import Event, Topics
 from digital_twin.core.module import BaseModule, ModuleState
-from digital_twin.perception.gesture.semantics import resolve
+from digital_twin.airboard.semantics import resolve
 
 logger = logging.getLogger(__name__)
 

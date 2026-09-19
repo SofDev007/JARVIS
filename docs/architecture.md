@@ -59,8 +59,8 @@ CREATED ──start(bus)──▶ STARTING ──▶ RUNNING ──pause──�
 
 | Topic                | Source          | Payload schema |
 | -------------------- | --------------- | -------------- |
-| `perception.gesture` | `gesture`       | `gesture: str` (semantic id), `confidence: float`, `hand: "left"\|"right"`, `repeat: bool` |
-| `perception.hand`    | `gesture`       | `hand: str`, `present: bool` |
+| `perception.gesture` | `airboard`      | `gesture: str` (semantic id), `confidence: float`, `hand: "left"\|"right"`, `repeat: bool` |
+| `perception.hand`    | `airboard`      | `hand: str`, `present: bool` |
 | `context.changed`    | any             | `context: str` |
 | `intent.detected`    | `intent`        | `intent: str`, `context: str`, `gesture: str`, `hand`, `confidence`, `repeat`, `source_event: str` (provenance) |
 | `action.requested`   | — reserved (M2) | `action`, `params`, permission metadata |
@@ -69,55 +69,53 @@ CREATED ──start(bus)──▶ STARTING ──▶ RUNNING ──pause──�
 Envelope keys (`event_id`, `timestamp`, `module`, `type`) are reserved and
 cannot be shadowed by payloads (enforced at `Event` construction).
 
-## 5. Gesture perception module
+## 5. Gesture perception (Airboard)
+
+Hand tracking runs in the browser; Python never opens the camera.
 
 ```
-ThreadedCamera ─frames─▶ InferenceWorker ─┐ (GestureSense: tracker →
-                                          │  smoother → gesture engine)
-                    poll thread ◀─latest──┘
-                        │  _process_output(): diff vs previous state
-                        ▼
-        perception.hand (presence edges)   perception.gesture (gesture edges)
+Airboard page (Chrome)                          Python kernel
+getUserMedia ─▶ MediaPipe HandLandmarker ─┐
+                gestures.js: features →    │  POST /state (~45 Hz heartbeat)
+                rules → stabilizer ────────┼──────────────▶ AirboardServer
+                board verbs (pinch, tap…)  │                 parse_perception()
+                stay local in stage.html   │                        │
+                                           │                        ▼
+                                           │   AirboardModule.on_perception():
+                                           │   diff vs previous state
+                                           ▼                        ▼
+                       perception.hand (presence edges)   perception.gesture (gesture edges)
 ```
 
+* **Named gestures** (`digital_twin/airboard/static/gestures.js`): the 14
+  rule-based gestures (thumbs, pointing ×4, palm, fist, peace, OK, rock,
+  ILY, call me, finger gun) with soft scores and a per-hand stabilizer
+  (7-frame majority vote + confidence EMA). It emits stable semantic ids
+  directly. Adding a gesture = one entry in `RULES`.
+* **Parity**: `tests/gesture_parity.mjs` checks every rule score and the
+  stabilizer against `tests/data/gesture_golden.json`, frozen from the
+  original Python engine (run by pytest when Node is present).
 * **Edge-triggered**: a held gesture publishes once; a gap in stability
   re-arms the edge; `repeat_interval_s > 0` re-publishes held gestures with
-  `repeat: true` for hold-to-repeat use cases.
-* **Deterministic core**: `_process_output(output, now)` is pure event
-  derivation, unit-tested directly without threads; the poll thread is a
-  thin loop around it.
-* **Injectable hardware**: camera and tracker are constructor factories —
-  the integration test runs the real GestureSense `InferenceWorker` against
-  a fake camera and scripted tracker, no hardware or MediaPipe needed.
-* **Pause = privacy**: `_on_pause` tears down camera + MediaPipe graph
-  entirely; `resume` rebuilds from factories.
-* **Semantic layer**: display names ("Peace / Victory") never leave the
-  module; stable ids (`peace`) do. A test pins the mapping to the library's
-  registered gesture list so drift fails CI.
+  `repeat: true`. A heartbeat gap > 1 s (page closed) resets edge state.
+* **Validation at the trust boundary**: `parse_perception` drops a whole
+  frame unless it has ≤2 hands from {left, right}, ids matching
+  `^[a-z0-9_]{1,40}$` and finite confidences in [0, 1]. The server also
+  enforces a loopback Host allowlist and a same-origin check on POST
+  (THREAT_MODEL §4.11).
+* **Pause = privacy**: the camera belongs to the browser tab; pausing the
+  module stops the server, so no gesture reaches the bus.
 
-### 5.1 Calibration, custom gestures, profiles, debug view (M2)
+### 5.1 Calibration and profiles
 
-* **Calibration** is a perception-side post-filter: per-gesture confidence
-  floors (`gesture_thresholds`) and a block-list (`disabled_gestures`),
-  applied in `_process_output` *before* edge detection, so a sub-threshold
-  detection behaves exactly like an unstable frame (and re-arms the edge).
-  Library internals stay untouched.
-* **Custom gestures** load from config (`custom_gesture_modules`: dotted
-  paths or `.py` files) before the engine builds its rule set. Loading is
-  idempotent across pause/resume and fails soft: broken specs are logged
-  and surfaced in module metrics, never fatal. Unknown display names get
-  deterministic slug ids, so custom gestures work in thresholds, profiles
-  and intent mappings with zero core changes.
-* **Profiles** are config-time overlays restricted to the `gesture` and
-  `intent` sections, selected via `profiles.active` or `--profile`.
-  Unknown profiles are a hard startup error (running with someone else's
-  tuning silently would be worse than not starting); overlays pass full
-  validation.
-* **Debug view** is an optional render thread reusing the GestureSense
-  renderer. Pre-flight display check before any GUI call — the Qt backend
-  *aborts the process* on headless `imshow`, so try/except is not a
-  defence; the view refuses to start instead (and macOS is declined
-  outright: OpenCV GUI must own the main thread there).
+* **Calibration** is a post-filter in `AirboardModule`: per-gesture
+  confidence floors (`airboard.gesture_thresholds`) and a block-list
+  (`airboard.disabled_gestures`), applied *before* edge detection, so a
+  sub-threshold detection behaves exactly like an unstable frame.
+* **Profiles** are config-time overlays restricted to `intent` and the
+  three `airboard` calibration keys (never host/port/allow_remote),
+  selected via `profiles.active` or `--profile`. Unknown profiles are a
+  hard startup error; overlays pass full validation.
 
 ## 6. Intent engine
 
@@ -630,7 +628,9 @@ browser <── EventSource ◀── /api/stream        (push, not poll)
 The dashboard becomes the whole cockpit, closing the §2.13 gaps without
 new core surface — every panel reads a seam that already existed.
 
-**Live camera in the browser.** A `FrameHub` (latest-frame-per-source
+**Live camera in the browser** *(historical: the Python gesture module and
+its `DebugView` were removed when hand tracking moved into the Airboard
+page — see §5; `FrameHub` remains, with no built-in producer).* A `FrameHub` (latest-frame-per-source
 fan-out) lets the gesture `DebugView` run **headless**: it annotates
 frames exactly as it would for its OpenCV window but, given a
 `frame_sink`, JPEG-encodes them into the hub instead of (or alongside)
@@ -762,10 +762,9 @@ camera thread   inference thread   poll thread      bus dispatcher    intent eng
 * Dashboard traffic is plain HTTP on loopback; `allow_remote` exposes it
   unencrypted and is deliberately gated behind config validation. TLS or
   a reverse proxy is the operator's job if they flip it.
-* ~~The gesture debug view renders via OpenCV, not the dashboard~~ —
-  fixed in M17: a headless `DebugView` JPEG-encodes annotated frames into
-  a `FrameHub` streamed at `/api/frames/<name>`. The OpenCV window is
-  still available when a display exists and `debug_window` is set.
+* The `FrameHub` camera stream (`/api/frames/<name>`, M17) has no built-in
+  producer since the Python gesture debug view was removed; the Airboard
+  page itself is now the visual debugger.
 * The hashing embedder is lexical: paraphrases with no shared tokens or
   trigrams won't match ("PTO" vs "vacation"). A semantic embedder is a
   drop-in; the store's embedder pin forces a clean re-ingest.

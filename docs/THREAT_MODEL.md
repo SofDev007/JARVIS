@@ -18,7 +18,8 @@ Knowa is a modular multimodal assistant running as a desktop application on
 a single Windows machine. It has three properties that together define its
 risk profile:
 
-1. **It perceives continuously.** Camera (gesture tracking), microphone
+1. **It perceives continuously.** Camera (gesture tracking, in the Airboard
+   browser tab — Python never opens it), microphone
    (wake word), focused-window context, and on-demand screen OCR.
 2. **It reasons over private data.** Encrypted episodic and semantic memory,
    plus a RAG index over ingested documents.
@@ -82,8 +83,10 @@ documents are ingested at all.
 ### A6 — Live sensor feeds
 
 Camera and microphone. Distinct from stored data because compromise is
-*ongoing* rather than a snapshot, and because the MJPEG endpoint currently
-serves the camera feed without authentication.
+*ongoing* rather than a snapshot. The camera is now held by the Airboard
+browser tab under the browser's own permission prompt; the kernel receives
+only derived gesture ids, never frames, and the dashboard MJPEG endpoint
+(mTLS-covered since §4.4) has no built-in camera producer any more.
 
 ### A7 — Audit log (`logs/audit.jsonl`)
 

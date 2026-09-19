@@ -11,11 +11,10 @@ From a checkout (recommended today):
 
 ```bash
 pip install .                 # lean core: kernel, chat, planner, files, plugins
-pip install .[all]            # everything (camera, voice, browser, semantic…)
+pip install .[all]            # everything (voice, browser, semantic…)
 ```
 
-Pick capabilities individually: `[gesture]` camera hand-tracking,
-`[encryption]` encrypted memory + file-backend secrets, `[browser]`
+Pick capabilities individually: `[encryption]` encrypted memory + file-backend secrets, `[browser]`
 Playwright (then run `playwright install chromium`), `[keyring]`
 OS-keyring secrets, `[voice]` microphone capture (download a Vosk model
 separately), `[semantic]` sentence-transformers embeddings.
@@ -32,8 +31,17 @@ Asset paths resolve against the working directory, then
 ## 2. First run
 
 ```bash
-python main.py --no-gesture        # chat-only, no camera needed
-python main.py                     # with the camera (gesture extra installed)
+python main.py                     # chat, voice, actions — no camera needed
+```
+
+Hand gestures run in the browser, not in Python. Set `airboard.enabled:
+true` in your config, start JARVIS, then open http://127.0.0.1:8794/ in
+Chrome and allow the camera. Gestures you make there (thumbs up, peace,
+pointing…) reach JARVIS like any other input; the translucent blue blob
+shows when JARVIS is listening, thinking or speaking.
+
+```bash
+python main.py --config my_config.yaml   # with airboard.enabled: true
 ```
 
 Type into the console to chat. Without an LLM configured the assistant

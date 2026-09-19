@@ -10,7 +10,6 @@ Usage::
     python main.py                          # defaults + config/default_config.yaml
     python main.py --config my.yaml
     python main.py --context presentation   # starting intent context
-    python main.py --no-gesture             # kernel without the camera module
 """
 
 from __future__ import annotations
@@ -59,11 +58,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Initial application context for the intent engine.",
     )
-    parser.add_argument(
-        "--no-gesture",
-        action="store_true",
-        help="Do not start the gesture perception module.",
-    )
     return parser.parse_args(argv)
 
 
@@ -80,7 +74,7 @@ def _console_reporter(event: Event) -> None:
     print(f"  {event}")
 
 
-def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> ModuleRegistry:
+def build_registry(config: AppConfig, bus: EventBus) -> ModuleRegistry:
     """Register the configured modules onto a fresh registry."""
     registry = ModuleRegistry(bus)
     if config.memory.enabled:
@@ -308,14 +302,6 @@ def build_registry(config: AppConfig, bus: EventBus, with_gesture: bool) -> Modu
 
             registry.register(WakeWordModule(config.voice, synthesizer=synthesizer))
             logger.info("Wake word enabled: %r", config.voice.wake_word)
-    if with_gesture:
-        # Imported here so the kernel starts even without cv2/mediapipe.
-        from digital_twin.perception.gesture.module import GesturePerceptionModule
-
-        registry.register(GesturePerceptionModule(
-            config.gesture,
-            frame_sink=(frame_hub.sink("gesture") if frame_hub else None),
-        ))
     return registry
 
 
@@ -345,9 +331,8 @@ def main(argv: list[str] | None = None) -> int:
     bus.start()
     bus.subscribe("*", _console_reporter, name="console")
 
-    with_gesture = config.gesture.enabled and not args.no_gesture
     try:
-        registry = build_registry(config, bus, with_gesture)
+        registry = build_registry(config, bus)
     except ImportError as exc:
         logger.error("Missing dependency: %s", exc)
         print(

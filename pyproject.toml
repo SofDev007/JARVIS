@@ -5,7 +5,6 @@
 # backends resolve lazily and the kernel starts without them.
 #
 #   pip install .                    # kernel, chat, planner, files, plugins…
-#   pip install .[gesture]           # camera + MediaPipe hand tracking
 #   pip install .[encryption]        # encrypted memory + file secrets backend
 #   pip install .[browser]           # Playwright (then: playwright install chromium)
 #   pip install .[keyring]           # OS-keyring secrets backend
@@ -21,7 +20,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "digital-twin-assistant"
 version = "0.17.0"
-description = "Modular, multimodal desktop AI assistant: gestures, chat, voice, screen OCR, files, plugins, browser — behind an event bus and hard permission gates."
+description = "Modular, multimodal desktop AI assistant: browser hand gestures (Airboard), chat, voice, screen OCR, files, plugins, browser — behind an event bus and hard permission gates."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -31,17 +30,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gesture = ["mediapipe>=0.10.9", "opencv-python>=4.8.0", "numpy>=1.24"]
 encryption = ["cryptography>=41"]
 browser = ["playwright>=1.44"]
 keyring = ["keyring>=24"]
 semantic = ["sentence-transformers>=2.6"]
-voice = ["sounddevice>=0.4", "vosk>=0.3.45"]
+voice = ["sounddevice>=0.4", "vosk>=0.3.45", "numpy>=1.24"]
 tts = ["piper-tts"]
 tts-jarvis = ["piper-tts", "coqui-tts", "torch", "torchaudio", "soundfile"]
 dev = ["pytest>=7.4"]
 all = [
-    "digital-twin-assistant[gesture,encryption,browser,keyring,voice,tts,semantic,dev]",
+    "digital-twin-assistant[encryption,browser,keyring,voice,tts,semantic,dev]",
 ]
 
 [project.scripts]
@@ -59,7 +57,7 @@ digital-twin-board-state = "digital_twin.airboard.cli_board_state:main"
 py-modules = ["main"]
 
 [tool.setuptools.packages.find]
-include = ["digital_twin*", "gesturesense*"]
+include = ["digital_twin*"]
 
 [tool.setuptools.package-data]
 "digital_twin.airboard" = ["static/*.html", "static/*.js"]

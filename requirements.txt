@@ -7,15 +7,11 @@
 # Event kernel
 PyYAML>=6.0            # configuration files
 
-# Gesture perception module (vendored GestureSense library)
-mediapipe>=0.10.9      # hand tracking (legacy Solutions or Tasks backend)
-opencv-python==5.0.0.93 # camera capture + gesture debug overlay (full GUI build;
-                       # do NOT use opencv-python-headless — the debug window
-                       # needs GUI support, and mixing the two shadows cv2)
-numpy>=1.24            # geometry and features
+# Hand tracking runs in the browser (Airboard page: MediaPipe via CDN),
+# so no camera or vision packages are needed in Python.
 
 # Optional
-psutil>=5.9            # process metrics in GestureSense debug tooling
+psutil>=5.9            # foreground-process name for context perception
 
 # Optional: input synthesis on Windows/macOS (Linux/X11 uses xdotool)
 # pynput>=1.7

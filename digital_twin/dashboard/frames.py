@@ -1,15 +1,15 @@
 """FrameHub — latest-frame fan-out from perception modules to browsers.
 
-Perception code pushes JPEG bytes under a source name (`hub.sink("gesture")`
+Perception code pushes JPEG bytes under a source name (`hub.sink("camera")`
 returns a plain callable, so modules never import dashboard machinery);
 the dashboard's MJPEG endpoint waits on the hub and forwards each new
 frame to however many browser tabs are watching. Only the *latest* frame
 is kept per source — a slow viewer sees dropped frames, never growing
 memory, and a stopped producer simply means viewers wait.
 
-This is what finally lets the gesture debug view leave its OpenCV window:
-the same annotated frames render in the dashboard, over the same
-loopback-only, token-free-but-read-only HTTP the other panels use.
+It was built for the Python gesture debug view, which is gone: hand tracking
+now runs in the Airboard browser page, so no built-in module produces frames
+today. The hub stays as generic infrastructure for any future producer.
 """
 
 from __future__ import annotations

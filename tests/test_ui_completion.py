@@ -1,6 +1,5 @@
 """Tests for M17 UI completion: the FrameHub + MJPEG streaming, the
-plugin and settings panels, the push-driven page, and the headless
-gesture debug view sink."""
+plugin and settings panels, and the push-driven page."""
 
 from __future__ import annotations
 
@@ -175,43 +174,3 @@ def test_page_is_push_driven(dashboard):
     assert "EventSource" in page and "/api/stream" in page
     for panel in ("plugins", "settings", "live", "frames"):
         assert f'id="{panel}"' in page
-
-
-# ---------------------------------------------------------------------------
-# Headless debug view: annotate + sink without a display
-# ---------------------------------------------------------------------------
-def test_debug_view_headless_sinks_frames(monkeypatch):
-    pytest.importorskip("cv2")
-    import numpy as np
-
-    from digital_twin.perception.gesture.debug_view import DebugView
-
-    class _Frame:
-        def __init__(self, seq):
-            self.seq = seq
-            self.image = np.zeros((24, 32, 3), dtype=np.uint8)
-
-    class _Camera:
-        def __init__(self):
-            self._seq = 0
-
-        def latest(self):
-            self._seq += 1
-            return _Frame(self._seq)
-
-    class _Worker:
-        fps = 12.0
-
-        def latest(self):
-            return None
-
-    frames = []
-    view = DebugView(fps_limit=60.0, frame_sink=frames.append, headless=True)
-    monkeypatch.delenv("DISPLAY", raising=False)  # truly headless
-    view.start(_Camera(), _Worker())
-    deadline = time.time() + 3
-    while not frames and time.time() < deadline:
-        time.sleep(0.02)
-    view.stop()
-    assert frames, "headless debug view produced no frames"
-    assert frames[0][:2] == b"\xff\xd8"  # JPEG magic

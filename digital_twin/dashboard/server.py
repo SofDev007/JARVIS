@@ -155,7 +155,7 @@ async function refresh(){
    if(live){
     const voice=s.modules.find(m=>m.name==="voice");
     const wake=s.modules.find(m=>m.name==="wake_word");
-    const gest=s.modules.find(m=>m.name==="gesture");
+    const board=s.modules.find(m=>m.name==="airboard");
     const badge=(label,on,detail)=>`<span class="evt" style="margin-right:14px">`+
      `<b style="color:${on?"var(--ok)":"var(--dim)"}">●</b> ${label}`+
      `${detail?` <span class="empty">${esc(detail)}</span>`:""}</span>`;
@@ -164,8 +164,9 @@ async function refresh(){
            voice?(voice.metrics.listening?"listening":"idle"):"off")+
      badge("wake",wake&&wake.state==="running",
            wake?`${wake.metrics.detections||0} detections`:"off")+
-     badge("camera",gest&&gest.state==="running",
-           gest?gest.state:"off");
+     badge("airboard",board&&board.state==="running",
+           board?(board.state==="running"
+             ?`${board.metrics.hands_visible||0} hands`:board.state):"off");
    }
    const fr=await get("/api/frames").catch(()=>({sources:[]}));
    const fd=document.getElementById("frames");

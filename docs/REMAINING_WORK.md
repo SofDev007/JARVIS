@@ -238,8 +238,9 @@ and native platform installers/bundles (`.app`/`.msi`).
   embedder pin makes swapping in a semantic backend a clean re-ingest.
 - Email connector: headers-only and read-only by design; no pagination.
 - Calendar connector does not expand RRULE recurrences.
-- The gesture debug view is still an OpenCV window, not a dashboard
-  panel.
+- Hand tracking now runs in the Airboard browser page (the Python
+  GestureSense module and its OpenCV debug view were removed); the
+  dashboard's camera panel therefore has no built-in producer.
 
 ---
 
