@@ -3,6 +3,48 @@
 All notable changes to the Digital Twin AI Assistant.
 Format follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased] — Airboard: one browser-based hand-gesture surface
+
+GestureSense (Python camera + MediaPipe) and the Airboard overlay board both
+tracked hands and fought over the webcam. They are now one thing: **Airboard**.
+
+### Added
+- **Named gestures in the browser** — `digital_twin/airboard/static/gestures.js`
+  ports the 14 rule-based gestures and the temporal stabilizer. The page's
+  `/state` heartbeat carries `hands` + stable `gestures`; `AirboardModule`
+  publishes the same `perception.gesture` / `perception.hand` events as
+  before (edge-trigger, repeat-while-held, disabled gestures, thresholds),
+  so intent tables and bindings are unchanged. Parity with the old Python
+  engine is pinned by `tests/gesture_parity.mjs` + `tests/data/gesture_golden.json`.
+- **The blob** — the board's assistant ring is now a rotating, translucent
+  light-blue droplet (raw WebGL2 shader, CSS fallback, reduced-motion
+  aware) that shows idle / listening / thinking / speaking and tints its rim
+  amber or red on declined or failed actions. State is derived live from
+  the bus (`voice.control`, `perception.voice*`, `perception.chat`,
+  `chat.response`, `action.result`); the agent state files remain a fallback.
+- Config: `airboard.repeat_interval_s`, `airboard.gesture_thresholds`,
+  `airboard.disabled_gestures`.
+
+### Security
+- Airboard server: loopback **Host allowlist** on every request (DNS
+  rebinding) and a same-origin **Origin check** on every POST (CSRF), since
+  the heartbeat now drives intents. Strict heartbeat payload validation.
+  THREAT_MODEL §4.11, actor T9, boundary B8.
+- Profiles may override only `intent` and the three `airboard` calibration
+  keys — never the board's host/port/allow_remote.
+
+### Removed
+- `gesturesense/` (vendored library), `digital_twin/perception/gesture/`
+  (camera module, OpenCV debug view, custom Python gesture loader),
+  `examples/custom_gestures/`, the `gesture:` config section and profile
+  section, `python main.py --no-gesture`, and the `[gesture]` extra
+  (mediapipe, opencv). `numpy` moved to the `[voice]` extra. Custom
+  gestures are now entries in `gestures.js`.
+
+### Fixed
+- The ring's speaking pulse read `wave.length` on a `{samples: [...]}`
+  object and never animated.
+
 ## [Unreleased] — Milestone 25: Dependency supply chain hygiene
 
 ### Added

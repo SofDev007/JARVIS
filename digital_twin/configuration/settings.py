@@ -36,56 +36,6 @@ class EventBusConfig:
 
 
 @dataclass(frozen=True)
-class GestureModuleConfig:
-    """Gesture perception module (wraps the GestureSense library)."""
-
-    enabled: bool = True
-
-    # Camera
-    camera_index: int = 0
-    frame_width: int = 1280
-    frame_height: int = 720
-    camera_fps: int = 30
-    mirror: bool = True
-
-    # Hand tracking
-    max_hands: int = 2
-    detection_confidence: float = 0.6
-    tracking_confidence: float = 0.6
-    landmark_smoothing: float = 0.55
-    model_complexity: int = 1
-    model_path: str = "models/hand_landmarker.task"
-
-    # Gesture engine
-    min_confidence: float = 0.55
-    history: int = 7
-    min_votes: int = 4
-
-    # Event behaviour
-    poll_interval_s: float = 0.02
-    """How often the module polls the inference worker for new results."""
-    repeat_interval_s: float = 0.0
-    """Re-publish a *held* gesture every N seconds (0 = edge-triggered only)."""
-
-    # Calibration / per-user tuning
-    gesture_thresholds: dict[str, float] = field(default_factory=dict)
-    """Per-gesture minimum confidence, keyed by semantic id (e.g.
-    ``{"thumbs_up": 0.75}``). Detections below the threshold are treated as
-    no gesture. Gestures without an entry use the engine's global
-    ``min_confidence``."""
-    disabled_gestures: list[str] = field(default_factory=list)
-    """Semantic ids this module must never publish (e.g. ``[finger_gun]``)."""
-
-    # Extensibility & tooling
-    custom_gesture_modules: list[str] = field(default_factory=list)
-    """Python module paths or ``.py`` files that register additional
-    :class:`gesturesense.gesture.base.GestureRule` classes at startup."""
-    debug_window: bool = False
-    """Show a live OpenCV window with skeleton + gesture overlays. Fails
-    soft (self-disables) in headless environments."""
-
-
-@dataclass(frozen=True)
 class IntentConfig:
     """Context-aware gesture → intent mapping."""
 
@@ -332,6 +282,10 @@ class AirboardConfig:
     """TCP port (0 = ephemeral, mainly for tests)."""
     allow_remote: bool = False
     """Permit binding non-loopback hosts. Off by default on purpose."""
+    remote_hosts: list[str] = field(default_factory=list)
+    """With ``allow_remote``: extra host names (no port) a browser may use
+    to reach the board, e.g. a tailnet name. Requests naming any other host
+    are refused, which is what keeps DNS rebinding out."""
     name: str = "JARVIS"
     """Shown in the page UI; has no security meaning."""
     state_timeout_s: int = 600
@@ -344,6 +298,15 @@ class AirboardConfig:
     orbs_file: str = "config/airboard.local.yaml"
     """Gitignored YAML listing the notes/media orbs — personal file-system
     paths, so kept out of the tracked default config entirely."""
+
+    # Named gestures the page recognises and JARVIS receives as events
+    repeat_interval_s: float = 0.0
+    """Re-publish a *held* gesture every N seconds (0 = edge-triggered only)."""
+    gesture_thresholds: dict[str, float] = field(default_factory=dict)
+    """Per-gesture minimum confidence by semantic id (``{"thumbs_up": 0.75}``);
+    below it counts as no gesture."""
+    disabled_gestures: list[str] = field(default_factory=list)
+    """Semantic ids never published (e.g. ``[finger_gun]``)."""
 
 
 @dataclass(frozen=True)
@@ -676,11 +639,12 @@ class PlannerConfig:
 
 @dataclass(frozen=True)
 class ProfilesConfig:
-    """Named per-user profiles overriding gesture/intent settings.
+    """Named per-user profiles overriding gesture calibration and intents.
 
-    A profile is a partial override of the ``gesture`` and ``intent``
-    sections only — thresholds, disabled gestures, repeat behaviour and
-    intent mappings are per-user concerns; bus sizing and logging are not.
+    A profile is a partial override of the ``intent`` section and of the
+    ``airboard`` gesture calibration keys only — thresholds, disabled
+    gestures, repeat behaviour and intent mappings are per-user concerns;
+    the board's host/port, bus sizing and logging are not.
     The active profile is chosen here or with ``--profile`` on the CLI.
     """
 
@@ -696,7 +660,6 @@ class AppConfig:
 
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     bus: EventBusConfig = field(default_factory=EventBusConfig)
-    gesture: GestureModuleConfig = field(default_factory=GestureModuleConfig)
     intent: IntentConfig = field(default_factory=IntentConfig)
     context_perception: ContextPerceptionConfig = field(
         default_factory=ContextPerceptionConfig
@@ -743,7 +706,6 @@ def _merge(instance: Any, overrides: dict[str, Any], path: str = "") -> Any:
 
 def _validate(config: AppConfig) -> AppConfig:
     """Fail fast on out-of-range values instead of misbehaving at runtime."""
-    gesture = config.gesture
     intent = config.intent
     security = config.security
     automation = config.automation
@@ -767,36 +729,6 @@ def _validate(config: AppConfig) -> AppConfig:
     checks: list[tuple[bool, str]] = [
         (config.bus.max_queue_size >= 1, "bus.max_queue_size must be >= 1"),
         (config.bus.slow_handler_warn_ms > 0, "bus.slow_handler_warn_ms must be > 0"),
-        (gesture.frame_width > 0 and gesture.frame_height > 0,
-         "gesture frame resolution must be positive"),
-        (0 < gesture.detection_confidence <= 1,
-         "gesture.detection_confidence must be in (0, 1]"),
-        (0 < gesture.tracking_confidence <= 1,
-         "gesture.tracking_confidence must be in (0, 1]"),
-        (1 <= gesture.max_hands <= 4, "gesture.max_hands must be within 1..4"),
-        (gesture.model_complexity in (0, 1),
-         "gesture.model_complexity must be 0 or 1"),
-        (0 < gesture.landmark_smoothing <= 1,
-         "gesture.landmark_smoothing must be in (0, 1]"),
-        (0 < gesture.min_confidence < 1,
-         "gesture.min_confidence must be in (0, 1)"),
-        (gesture.min_votes <= gesture.history,
-         "gesture.min_votes cannot exceed gesture.history"),
-        (gesture.poll_interval_s > 0, "gesture.poll_interval_s must be > 0"),
-        (gesture.repeat_interval_s >= 0,
-         "gesture.repeat_interval_s must be >= 0"),
-        (isinstance(gesture.gesture_thresholds, dict)
-         and all(
-             isinstance(k, str) and isinstance(v, (int, float)) and 0 < v <= 1
-             for k, v in gesture.gesture_thresholds.items()
-         ),
-         "gesture.gesture_thresholds must map semantic ids to values in (0, 1]"),
-        (isinstance(gesture.disabled_gestures, list)
-         and all(isinstance(g, str) and g for g in gesture.disabled_gestures),
-         "gesture.disabled_gestures must be a list of semantic ids"),
-        (isinstance(gesture.custom_gesture_modules, list)
-         and all(isinstance(m, str) and m for m in gesture.custom_gesture_modules),
-         "gesture.custom_gesture_modules must be a list of module paths"),
         (isinstance(intent.mappings, dict)
          and all(
              isinstance(ctx, str)
@@ -957,6 +889,10 @@ def _validate(config: AppConfig) -> AppConfig:
          or str(airboard.host) in ("127.0.0.1", "localhost", "::1"),
          "airboard.host must be loopback unless airboard.allow_remote is "
          "true"),
+        (isinstance(airboard.remote_hosts, list)
+         and all(isinstance(h, str) and h and ":" not in h and "/" not in h
+                 for h in airboard.remote_hosts),
+         "airboard.remote_hosts must be a list of host names without ports"),
         (airboard.state_timeout_s > 0,
          "airboard.state_timeout_s must be > 0"),
         (bool(str(airboard.state_dir).strip()),
@@ -965,6 +901,17 @@ def _validate(config: AppConfig) -> AppConfig:
          "airboard.media_dir must be a directory path"),
         (bool(str(airboard.orbs_file).strip()),
          "airboard.orbs_file must be a file path"),
+        (airboard.repeat_interval_s >= 0,
+         "airboard.repeat_interval_s must be >= 0"),
+        (isinstance(airboard.gesture_thresholds, dict)
+         and all(
+             isinstance(k, str) and isinstance(v, (int, float)) and 0 < v <= 1
+             for k, v in airboard.gesture_thresholds.items()
+         ),
+         "airboard.gesture_thresholds must map semantic ids to values in (0, 1]"),
+        (isinstance(airboard.disabled_gestures, list)
+         and all(isinstance(g, str) and g for g in airboard.disabled_gestures),
+         "airboard.disabled_gestures must be a list of semantic ids"),
         (bool(str(knowledge.db_path).strip()),
          "knowledge.db_path must be a file path"),
         (knowledge.embedder in ("hashing", "semantic"),
@@ -1047,12 +994,18 @@ def _validate(config: AppConfig) -> AppConfig:
     return config
 
 
-#: Config sections a user profile is allowed to override.
-_PROFILE_SECTIONS = frozenset({"gesture", "intent"})
+#: What a user profile may override: section -> allowed keys (None = any).
+#: ``airboard`` is limited to per-user gesture calibration — never the
+#: server's host/port/allow_remote.
+_PROFILE_KEYS: dict[str, frozenset[str] | None] = {
+    "airboard": frozenset(
+        {"gesture_thresholds", "disabled_gestures", "repeat_interval_s"}),
+    "intent": None,
+}
 
 
 def _apply_profile(config: AppConfig, profile_name: str) -> AppConfig:
-    """Overlay the named profile's gesture/intent overrides onto ``config``."""
+    """Overlay the named profile's airboard/intent overrides onto ``config``."""
     available = config.profiles.available
     if not isinstance(available, dict) or not all(
         isinstance(name, str) and isinstance(overrides, dict)
@@ -1066,11 +1019,19 @@ def _apply_profile(config: AppConfig, profile_name: str) -> AppConfig:
             f"Unknown profile {profile_name!r}; available: {sorted(available)}"
         )
     overrides = available[profile_name]
-    illegal = set(overrides) - _PROFILE_SECTIONS
+    illegal = set(overrides) - set(_PROFILE_KEYS)
+    for section, keys in _PROFILE_KEYS.items():
+        body = overrides.get(section, {})
+        if not isinstance(body, dict):
+            illegal.add(section)
+        elif keys is not None:
+            illegal |= {f"{section}.{k}" for k in set(body) - keys}
     if illegal:
+        allowed = [s if k is None else f"{s}.{{{', '.join(sorted(k))}}}"
+                   for s, k in _PROFILE_KEYS.items()]
         raise ValueError(
-            f"Profile {profile_name!r} may only override "
-            f"{sorted(_PROFILE_SECTIONS)}; found {sorted(illegal)}"
+            f"Profile {profile_name!r} may only override {allowed}; "
+            f"found {sorted(illegal)}"
         )
     if not overrides:
         return config

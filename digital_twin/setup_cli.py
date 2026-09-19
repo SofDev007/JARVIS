@@ -72,8 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"    {marker} DIGITAL_TWIN_HOME={home}")
     print("Then run:  digital-twin")
     if (home / "models").exists():
-        print("\nOptional: drop a Vosk model into models/ for voice, and a "
-              "MediaPipe hand_landmarker.task for gestures (see the README).")
+        print("\nOptional: drop a Vosk model into models/ for voice "
+              "(see the README).")
     return 0
 
 

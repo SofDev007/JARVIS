@@ -21,36 +21,51 @@ local-only tool, there is no token/auth layer):
 * **/cmd allowlist**: only a fixed set of actions is accepted; anything
   else is a 400 with no detail leaked.
 * **No CORS headers are ever sent** — cross-origin browser reads are
-  blocked by default same-origin policy, which is the only defense here
-  (matches the reference: nothing else is layered on top).
+  blocked by default same-origin policy.
+* **Host allowlist** on every request: the ``Host`` header must name this
+  server as ``127.0.0.1``/``localhost``/``[::1]`` + its port — plus, only
+  with ``allow_remote``, the bind host and ``airboard.remote_hosts`` — so a
+  DNS-rebinding page can neither read notes nor POST.
+* **Origin check on POST**: a present ``Origin`` must be ``http://`` + one of
+  those same allowed hosts (never the request's own ``Host``). Browsers
+  always send it cross-site, so no web page can forge a heartbeat (which
+  carries gestures that become JARVIS intents) or a board command; local
+  CLI tools send no Origin and keep working.
 
 Endpoints::
 
     GET  /                    stage.html (fresh on every load; no-store)
+    GET  /gestures.js         the named-gesture engine the page imports
     GET  /media/<rel>         media airlock, jailed to the media root
     POST /state                tracker's ~45Hz heartbeat; response carries
-                                up to 8 queued commands (piggybacked channel)
+                                up to 8 queued commands (piggybacked channel).
+                                Its ``hands``/``gestures`` fields are validated
+                                and handed to ``on_perception``
     GET  /state                the render page mirrors the scene from here
     POST /cmd                  board commands (agent -> board): {"a": ...}
     GET  /config                {name, orbs: [{title, kind}]} (no paths)
     GET  /tree?orb=N             a notes-orb folder tree, .md only, jailed
     GET  /note?f=N/<rel>         one note's raw text, jailed, .md only
     GET  /props                  media airlock as a browsable tree
-    GET  /orb                    agent's live state (the ring reads this)
+    GET  /orb                    the blob's state {state, mood[, wave]}: live
+                                  from the kernel bus, else the agent's files
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import mimetypes
+import re
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable
 
-from digital_twin.airboard.orbs import Orb, media_root as compute_media_root
+from digital_twin.airboard.orbs import Orb, load_orbs, media_root as compute_media_root
 from digital_twin.airboard.orbs import resolve_root
 
 logger = logging.getLogger(__name__)
@@ -68,6 +83,38 @@ _MOOD_TTL_S = 45.0
 _WAVE_TTL_S = 0.6
 
 _STAGE_HTML = Path(__file__).parent / "static" / "stage.html"
+_GESTURES_JS = Path(__file__).parent / "static" / "gestures.js"
+_HANDS = ("left", "right")
+_GESTURE_ID = re.compile(r"^[a-z0-9_]{1,40}$")
+
+#: ``on_perception(hands, gestures)``: hands present this frame, and their
+#: stable gestures as ``{"hand", "gesture", "confidence"}`` dicts.
+PerceptionCallback = Callable[[list[str], list[dict]], None]
+
+
+def parse_perception(state: object) -> tuple[list[str], list[dict]] | None:
+    """Validate a heartbeat's ``hands``/``gestures``; ``None`` if absent or
+    malformed (a bad frame is dropped whole, never half-applied)."""
+    if not isinstance(state, dict) or "hands" not in state:
+        return None
+    hands, gestures = state.get("hands"), state.get("gestures", [])
+    if not (isinstance(hands, list) and isinstance(gestures, list)
+            and len(hands) <= 2 and len(gestures) <= 2):
+        return None
+    if not all(h in _HANDS for h in hands) or len(set(hands)) != len(hands):
+        return None
+    out = []
+    for g in gestures:
+        if not isinstance(g, dict):
+            return None
+        hand, name, conf = g.get("hand"), g.get("gesture"), g.get("confidence")
+        if (hand not in hands or not isinstance(name, str)
+                or not _GESTURE_ID.match(name)
+                or isinstance(conf, bool) or not isinstance(conf, (int, float))
+                or not math.isfinite(conf) or not 0.0 <= conf <= 1.0):
+            return None
+        out.append({"hand": hand, "gesture": name, "confidence": float(conf)})
+    return list(hands), out
 
 
 class AirboardServer:
@@ -83,8 +130,19 @@ class AirboardServer:
         media_dir: str,
         state_dir: str,
         state_timeout_s: int,
+        allow_remote: bool = False,
+        remote_hosts: tuple[str, ...] = (),
+        on_perception: PerceptionCallback | None = None,
+        orb_source: Callable[[], dict] | None = None,
     ):
         self._name = name
+        # Names a browser may use to reach this server. Loopback always;
+        # with allow_remote, also the bind host and the operator's explicit
+        # remote_hosts. Never derived from a request (DNS rebinding).
+        self._host_names = ("127.0.0.1", "localhost", "[::1]") + (
+            (host, *remote_hosts) if allow_remote else ())
+        self._on_perception = on_perception
+        self._orb_source = orb_source
         self._orbs = orbs
         self._media_root = compute_media_root(orbs, media_dir)
         self._media_root.mkdir(parents=True, exist_ok=True)
@@ -98,8 +156,9 @@ class AirboardServer:
 
         try:
             page = _STAGE_HTML.read_bytes()
+            gestures_js = _GESTURES_JS.read_bytes()
         except OSError as exc:
-            raise RuntimeError(f"airboard: missing {_STAGE_HTML}: {exc}") from exc
+            raise RuntimeError(f"airboard: missing static file: {exc}") from exc
 
         outer = self
 
@@ -122,13 +181,31 @@ class AirboardServer:
                 self._send(code, json.dumps(obj).encode("utf-8"),
                            "application/json")
 
+            def _refused(self, post: bool) -> bool:
+                """Host allowlist + POST Origin check; sends the 403 itself.
+                Both compare against a fixed set, never against the request's
+                own Host header."""
+                allowed = outer._allowed_hosts()
+                ok = self.headers.get("Host", "") in allowed
+                origin = self.headers.get("Origin")
+                if post and origin is not None and \
+                        origin not in {f"http://{h}" for h in allowed}:
+                    ok = False
+                if not ok:
+                    self._json(403, {"error": "forbidden"})
+                return not ok
+
             # -- GET ---------------------------------------------------------
             def do_GET(self):
+                if self._refused(post=False):
+                    return
                 parsed = urllib.parse.urlsplit(self.path)
                 route = parsed.path
                 query = urllib.parse.parse_qs(parsed.query)
                 if route == "/":
                     self._send(200, page, "text/html; charset=utf-8")
+                elif route == "/gestures.js":
+                    self._send(200, gestures_js, "text/javascript; charset=utf-8")
                 elif route.startswith("/media/"):
                     outer._serve_media(self, route[len("/media/"):])
                 elif route == "/state":
@@ -150,6 +227,8 @@ class AirboardServer:
 
             # -- POST ----------------------------------------------------
             def do_POST(self):
+                if self._refused(post=True):
+                    return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                 except ValueError:
@@ -162,6 +241,7 @@ class AirboardServer:
                         drained = outer._cmds[:_MAX_QUEUED_CMDS]
                         del outer._cmds[:_MAX_QUEUED_CMDS]
                     self._json(200, drained)
+                    outer._deliver_perception(body)
                 elif self.path == "/cmd":
                     ok = outer._accept_cmd(body)
                     self.send_response(204 if ok else 400)
@@ -169,14 +249,46 @@ class AirboardServer:
                 else:
                     self._json(404, {"error": "not found"})
 
-        self._closing = False
         self._server = ThreadingHTTPServer((host, port), Handler)
         self._server.daemon_threads = True
         self._thread: threading.Thread | None = None
 
+    @classmethod
+    def from_config(cls, config, **hooks) -> "AirboardServer":
+        """Build from an ``AirboardConfig`` — the one place config fields
+        map to server arguments (kernel module and standalone runner alike).
+        ``hooks``: ``on_perception`` / ``orb_source``."""
+        return cls(
+            config.host, config.port,
+            name=config.name, orbs=load_orbs(config.orbs_file),
+            media_dir=config.media_dir, state_dir=config.state_dir,
+            state_timeout_s=config.state_timeout_s,
+            allow_remote=config.allow_remote,
+            remote_hosts=tuple(config.remote_hosts),
+            **hooks,
+        )
+
     # ------------------------------------------------------------------
     # Endpoint bodies (kept off the Handler so they're testable directly)
     # ------------------------------------------------------------------
+    def _allowed_hosts(self) -> set[str]:
+        port = self.port
+        return {f"{name}:{port}" for name in self._host_names}
+
+    def _deliver_perception(self, body: bytes) -> None:
+        if self._on_perception is None:
+            return
+        try:
+            parsed = parse_perception(json.loads(body))
+        except ValueError:
+            parsed = None
+        if parsed is None:
+            return
+        try:
+            self._on_perception(*parsed)
+        except Exception:  # a consumer bug must not break the heartbeat
+            logger.exception("airboard: perception callback failed")
+
     def _serve_media(self, handler: BaseHTTPRequestHandler, rel: str) -> None:
         rel = urllib.parse.unquote(rel).lstrip("/")
         target = (self._media_root / rel).resolve()
@@ -298,6 +410,19 @@ class AirboardServer:
         return {"items": items, "dirs": dirs}
 
     def _orb_view(self) -> dict:
+        """The blob's state. The kernel's live bus-derived state wins when
+        active; the agent-written state files remain the fallback."""
+        out = self._file_orb_view()
+        live = self._orb_source() if self._orb_source is not None else {}
+        if live.get("state", "idle") != "idle":
+            out["state"] = live["state"]
+            if live["state"] != "speaking":
+                out.pop("wave", None)
+        if live.get("mood", "green") != "green":
+            out["mood"] = live["mood"]
+        return out
+
+    def _file_orb_view(self) -> dict:
         out: dict = {"state": "idle", "mood": "green"}
         now = time.time()
         try:
@@ -342,7 +467,6 @@ class AirboardServer:
                     self._server.server_address[0], self.port)
 
     def stop(self) -> None:
-        self._closing = True
         self._server.shutdown()
         self._server.server_close()
         if self._thread is not None:

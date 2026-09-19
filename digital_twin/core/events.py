@@ -11,7 +11,7 @@ Serialised form (``to_dict``) matches the platform contract, e.g.::
     {
         "event_id": "9f2c…",
         "timestamp": "2026-07-06T12:00:00.412000+00:00",
-        "module": "gesture",
+        "module": "airboard",
         "type": "perception.gesture",
         "gesture": "thumbs_up",
         "confidence": 0.97,

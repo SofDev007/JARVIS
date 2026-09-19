@@ -2,14 +2,15 @@
 
 A cross-platform, multimodal desktop AI assistant built as a set of
 independent, replaceable modules communicating over an event bus. Perception
-modules observe (camera, gestures, and — in future milestones — voice,
-screen, OCR, keyboard); reasoning modules interpret; automation modules act.
+modules observe (hand gestures in the Airboard browser page, and — in
+future milestones — voice, screen, OCR, keyboard); reasoning modules interpret; automation modules act.
 No module knows about any other: the event contract is the only coupling.
 
 **Milestone 1** delivers the multimodal kernel — event bus, module
 lifecycle, registry, typed configuration, rotating logs — with the
-[GestureSense](gesturesense/) hand-gesture engine integrated as the first
-first-class perception plugin and a context-aware intent engine proving the
+hand-gesture engine integrated as the first first-class perception plugin
+(since replaced by [Airboard](digital_twin/airboard/), which tracks hands
+in the browser) and a context-aware intent engine proving the
 full perception → reasoning chain.
 
 ```
@@ -17,8 +18,8 @@ full perception → reasoning chain.
    PERCEPTION            │                 EVENT BUS                    │        REASONING
                          │   bounded queue · dispatcher thread ·        │
  ┌────────────────┐      │   fault isolation · backpressure · stats     │      ┌────────────────┐
- │ gesture module │─────▶│                                              │─────▶│ intent engine  │
- │ (GestureSense) │      │  perception.gesture   {gesture, conf, hand}  │      │ context-aware  │
+ │ airboard       │─────▶│                                              │─────▶│ intent engine  │
+ │ (browser hands)│      │  perception.gesture   {gesture, conf, hand}  │      │ context-aware  │
  └────────────────┘      │  perception.hand      {hand, present}        │      └───────┬────────┘
  ┌────────────────┐      │  context.changed      {context}              │
  │ screen context │─────▶│                                              │
@@ -42,27 +43,26 @@ decision never lives in perception code:
 
 The whole table is configuration (`config/default_config.yaml`), not code.
 
-**Per-user tuning (Milestone 2).** The gesture module is calibratable and
-extensible without touching core code:
+**Per-user tuning (Milestone 2).** Gesture recognition is calibratable
+without touching core code:
 
 ```yaml
-gesture:
+airboard:
   gesture_thresholds: {thumbs_up: 0.75}     # per-gesture confidence floors
   disabled_gestures: [finger_gun]           # never published
-  custom_gesture_modules:                   # your own GestureRule classes
-    - examples/custom_gestures/three_count.py
-  debug_window: true                        # live skeleton/label overlay
+  repeat_interval_s: 0.8                    # re-fire a held gesture
 
 profiles:                                   # named per-user bundles of the above
   active: arnav
   available:
     default: {}
     arnav:
-      gesture: {repeat_interval_s: 0.8, gesture_thresholds: {thumbs_up: 0.7}}
+      airboard: {repeat_interval_s: 0.8, gesture_thresholds: {thumbs_up: 0.7}}
       intent:  {default_context: coding}
 ```
 
-Select profiles at launch with `python main.py --profile arnav`.
+Select profiles at launch with `python main.py --profile arnav`. New
+gestures are one entry in `RULES` in `digital_twin/airboard/static/gestures.js`.
 
 **Guarded automation (Milestone 3).** Intents don't run code directly —
 every effect passes a fixed security pipeline: **binding → validation →
@@ -330,22 +330,19 @@ pip install -r requirements.txt
 # Without this the CLIs are reachable only as `python -m digital_twin.…`.
 pip install -e .
 
-# Full kernel with camera-based gesture perception:
+# Full kernel (set airboard.enabled: true, then open http://127.0.0.1:8794/
+# in Chrome — the page tracks your hands and sends gestures to JARVIS):
 python main.py --context presentation
-
-# Kernel without a camera:
-python main.py --no-gesture
 
 # No-hardware demo of the gesture → bus → intent chain:
 python examples/gesture_to_intent_demo.py
 
-# Tests (no camera required — the pipeline is verified with fakes):
+# Tests (no camera required; the JS gesture engine is checked under Node):
 python -m pytest tests/ -q
 ```
 
-The MediaPipe hand-landmark model is bundled at
-`models/hand_landmarker.task` (Apache 2.0); GestureSense auto-downloads it
-if missing.
+The Airboard page loads MediaPipe's hand-landmark model from Google's CDN
+(Apache 2.0); Python needs no camera or vision packages.
 
 ---
 
@@ -392,9 +389,9 @@ Subscriptions match an exact topic, a subtree (`perception.*`), or
 everything (`*`).
 
 Gesture identifiers are **semantic**, stable `snake_case` names
-(`thumbs_up`, `peace`, `i_love_you`, `pointing_left`, …) decoupled from the
-library's display names, with aliases (`high_five` → `open_palm`). See
-`digital_twin/perception/gesture/semantics.py`.
+(`thumbs_up`, `peace`, `i_love_you`, `pointing_left`, …) emitted directly by
+the browser engine, with aliases (`high_five` → `open_palm`). See
+`digital_twin/airboard/semantics.py`.
 
 ---
 
@@ -438,7 +435,7 @@ digital-twin/
 ├── digital_twin/
 │   ├── core/                   # events, bus, module contract, registry
 │   ├── configuration/          # typed config with YAML overrides
-│   ├── perception/gesture/     # GestureSense plugin + calibration, custom rules, debug view
+│   ├── airboard/               # browser board: hand tracking, named gestures, the blob
 │   ├── perception/context/     # active-window probes + context classification
 │   ├── perception/screen/      # on-demand screenshot capture + local OCR (gated)
 │   ├── reasoning/              # intent engine + LLM interface + chat reasoner
@@ -452,8 +449,6 @@ digital-twin/
 │   ├── plugins/                # manifest contract + scoped third-party loader
 │   ├── security/               # permission policy, confirmation gates, audit log, secrets
 │   └── utils/                  # logging setup (rotating files)
-├── gesturesense/               # vendored perception library (reusable standalone)
-├── models/hand_landmarker.task # bundled MediaPipe model (Apache 2.0)
 ├── plugins/examples/           # connector plugins: calendar, tasks, email
 ├── examples/                   # no-hardware demos
 ├── tests/                      # 426 tests, hardware-free

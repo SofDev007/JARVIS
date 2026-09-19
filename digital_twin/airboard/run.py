@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import time
 
-from digital_twin.airboard.orbs import load_orbs
 from digital_twin.airboard.server import AirboardServer
 from digital_twin.configuration.settings import load_config
 
@@ -27,13 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = load_config(args.config).airboard
-    orbs = load_orbs(config.orbs_file)
-    server = AirboardServer(
-        config.host, config.port,
-        name=config.name, orbs=orbs,
-        media_dir=config.media_dir, state_dir=config.state_dir,
-        state_timeout_s=config.state_timeout_s,
-    )
+    server = AirboardServer.from_config(config)
     server.start()
     print(f"Air board listening on http://{config.host}:{server.port}/ "
           f"(Ctrl+C to stop)")

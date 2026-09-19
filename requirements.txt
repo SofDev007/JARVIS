@@ -9,19 +9,11 @@
 # Event kernel
 PyYAML>=6.0            # configuration files
 
-# Gesture perception module (vendored GestureSense library)
-mediapipe>=0.10.9      # hand tracking (legacy Solutions or Tasks backend)
-opencv-contrib-python>=4.8.0 # camera capture + gesture debug overlay (full GUI
-                       # build; NOT opencv-python and NOT opencv-python-headless
-                       # — mediapipe>=1.0 hard-requires opencv-contrib-python
-                       # itself, so declaring a second cv2-providing package
-                       # here would install two wheels shadowing the same
-                       # `cv2` import, exactly the bug M18 Phase 1 fixed for
-                       # -headless, recurred here with a newer mediapipe)
-numpy>=1.24            # geometry and features
+# Hand tracking runs in the browser (Airboard page: MediaPipe via CDN),
+# so no camera or vision packages are needed in Python.
 
 # Optional
-psutil>=5.9            # process metrics in GestureSense debug tooling
+psutil>=5.9            # foreground-process name for context perception
 
 # Optional: input synthesis on Windows/macOS (Linux/X11 uses xdotool)
 # pynput>=1.7

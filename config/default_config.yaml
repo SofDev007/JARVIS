@@ -15,45 +15,6 @@ bus:
   max_queue_size: 1024         # bounded queue; oldest events shed on overload
   slow_handler_warn_ms: 50.0   # warn when a subscriber stalls dispatch
 
-gesture:
-  enabled: true
-
-  # Camera
-  camera_index: 0
-  frame_width: 1280
-  frame_height: 720
-  camera_fps: 30
-  mirror: true
-
-  # Hand tracking (MediaPipe)
-  max_hands: 2
-  detection_confidence: 0.6
-  tracking_confidence: 0.6
-  landmark_smoothing: 0.55     # EMA alpha; 1.0 disables smoothing
-  model_complexity: 1          # legacy Solutions backend only
-  model_path: models/hand_landmarker.task   # Tasks backend model file
-
-  # Gesture engine
-  min_confidence: 0.55
-  history: 7                   # temporal vote window (frames)
-  min_votes: 4
-
-  # Event behaviour
-  poll_interval_s: 0.02        # how often results are polled for changes
-  repeat_interval_s: 0.0       # re-publish a held gesture every N s (0 = off)
-
-  # Calibration / per-user tuning
-  gesture_thresholds: {}       # per-gesture min confidence, e.g. {thumbs_up: 0.75}
-  disabled_gestures: []        # semantic ids never published, e.g. [finger_gun]
-
-  # Extensibility & tooling
-  custom_gesture_modules: []   # modules/.py files registering GestureRule classes,
-                               # e.g. [examples/custom_gestures/three_count.py]
-  debug_window: false          # live skeleton/gesture overlay (dev/calibration
-                               # tool). Off by shipped default: an always-on
-                               # camera overlay window is more exposing than the
-                               # code default warrants. Turn on for calibration.
-
 intent:
   default_context: desktop
   # context -> gesture -> intent. "*" is the fallback context.
@@ -169,6 +130,7 @@ airboard:
   host: 127.0.0.1              # loopback only unless allow_remote: true
   port: 8794                   # http://127.0.0.1:8794 (0 = ephemeral)
   allow_remote: false          # binding beyond loopback is an explicit act
+  remote_hosts: []             # with allow_remote: extra host names browsers may use
   name: JARVIS                  # shown in the page UI
   state_timeout_s: 600          # a stale agent state decays to idle after this
   state_dir: data/airboard/state
@@ -176,6 +138,11 @@ airboard:
   # Notes/media orb paths are personal filesystem locations, so they live
   # outside this tracked file — see orbs_file (gitignored) below.
   orbs_file: config/airboard.local.yaml
+  # Named gestures (thumbs_up, peace, ...) recognised in the page and sent
+  # to JARVIS as perception.gesture events.
+  repeat_interval_s: 0.0       # re-publish a held gesture every N s (0 = edge only)
+  gesture_thresholds: {}       # per-gesture min confidence, e.g. {thumbs_up: 0.75}
+  disabled_gestures: []        # semantic ids never published
 
 knowledge:
   enabled: true                # local RAG: ingest -> chunk -> embed -> recall
@@ -407,7 +374,8 @@ automation:
       action: read_screen      # SENSITIVE: one confirmed capture + OCR
       params: {}
 
-# Named per-user profiles overriding the gesture/intent sections only.
+# Named per-user profiles overriding intents and the airboard gesture
+# calibration keys (thresholds, disabled gestures, repeat) only.
 # Select with `profiles.active` or `python main.py --profile <name>`.
 profiles:
   active: default
@@ -415,7 +383,7 @@ profiles:
     default: {}
     # Example:
     # arnav:
-    #   gesture:
+    #   airboard:
     #     repeat_interval_s: 0.8
     #     gesture_thresholds: {thumbs_up: 0.7}
     #     disabled_gestures: [finger_gun]

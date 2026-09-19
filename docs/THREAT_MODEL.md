@@ -18,7 +18,8 @@ Knowa is a modular multimodal assistant running as a desktop application on
 a single Windows machine. It has three properties that together define its
 risk profile:
 
-1. **It perceives continuously.** Camera (gesture tracking), microphone
+1. **It perceives continuously.** Camera (gesture tracking, in the Airboard
+   browser tab — Python never opens it), microphone
    (wake word), focused-window context, and on-demand screen OCR.
 2. **It reasons over private data.** Encrypted episodic and semantic memory,
    plus a RAG index over ingested documents.
@@ -82,8 +83,10 @@ documents are ingested at all.
 ### A6 — Live sensor feeds
 
 Camera and microphone. Distinct from stored data because compromise is
-*ongoing* rather than a snapshot, and because the MJPEG endpoint currently
-serves the camera feed without authentication.
+*ongoing* rather than a snapshot. The camera is now held by the Airboard
+browser tab under the browser's own permission prompt; the kernel receives
+only derived gesture ids, never frames, and the dashboard MJPEG endpoint
+(mTLS-covered since §4.4) has no built-in camera producer any more.
 
 ### A7 — Audit log (`logs/audit.jsonl`)
 
@@ -109,6 +112,7 @@ whatever is on screen at capture time enters the prompt path.
 | **T6** | LLM provider | Sees every prompt sent to cloud | Commercial / legal process | **Certain** — by design, not a breach |
 | **T7** | Physical access, unlocked machine | Everything | Varies | **Low**, unmitigable |
 | **T8** | Supply chain (dependency compromise) | Arbitrary code at operator privilege | Broad | **Low-Medium** |
+| **T9** | Malicious web page in the operator's browser | Sends cross-origin requests to loopback ports; DNS rebinding | Drive local services | **Medium** — every browsing session |
 
 Deliberately **out of scope:** nation-state actors, hardware implants,
 and side-channel attacks. Defending against those is not proportionate to a
@@ -515,12 +519,57 @@ downloads); one `pip-audit` pass against the clean venv, run ephemerally
 (not added as a permanent dependency) — **no known vulnerabilities**
 across the full locked set.
 
+*Airboard update:* the `[gesture]` extra was removed (hand tracking moved
+into the browser), so the lock was regenerated the same way for
+`[encryption,keyring,voice,tts,dev]`. That dropped mediapipe,
+opencv-contrib-python and their 10 exclusive dependencies. No `cv2`
+provider is installed any more, so the two OpenCV conflicts above can't
+recur. Every remaining pin is unchanged from the audited set, so the
+`pip-audit` result still holds.
+
 **Residual:** `requirements-lock.txt` is hand-regenerated (`pip freeze`
 from a fresh venv), not tool-managed (`pip-compile`/`poetry.lock`) — fine
 for now, but it will silently drift stale if a dependency changes and
 nobody remembers to regenerate it. `pip-audit` isn't wired into any
 repeated workflow (no CI exists to run it automatically) — it's a
 one-time signal, not a standing control, until CI exists to make it one.
+
+### 4.11 Forged gestures via the Airboard heartbeat ✅ Airboard
+
+**Actor:** T9 (any page open in the operator's browser), T1 (another local
+process)
+
+Hand tracking moved into the browser: the Airboard page
+(`digital_twin/airboard/`, `127.0.0.1:8794`) posts a ~45 Hz heartbeat to
+`POST /state` whose `hands`/`gestures` fields the module publishes as
+`perception.gesture` events, which the intent engine maps to automation
+(A1). The server has no session token. Before this change a web page could
+reach it with a CORS "simple request" (`text/plain` POST needs no
+preflight), and a DNS-rebinding page could also read notes via `GET /note`.
+
+**Controls:**
+- **Host allowlist** on every request: `Host` must be
+  `127.0.0.1|localhost|[::1]:<port>` — plus, only with `allow_remote`, the
+  bind host and the operator's explicit `airboard.remote_hosts`. Defeats DNS
+  rebinding for reads and writes.
+- **Origin check** on every POST: a present `Origin` must be `http://` +
+  one of those same allowed hosts. Browsers always send `Origin` cross-site,
+  so no page can forge a heartbeat or a `/cmd`. Origin-less clients (the
+  local CLI tools) still work, by design.
+- *Phase 4 review fix:* the first version skipped the Host check entirely
+  under `allow_remote` and compared `Origin` with the request's own `Host`,
+  so a rebinding page (Origin `http://evil:8794`, Host `evil:8794`) passed
+  both. Both checks now use the fixed allowlist, never request headers
+  (`test_allow_remote_keeps_the_host_and_origin_allowlist`).
+- **Strict payload validation** (`parse_perception`): ≤2 hands from
+  {left,right}, ids `^[a-z0-9_]{1,40}$`, finite confidence in [0,1]; a bad
+  frame is dropped whole. Gesture events still pass through the dispatcher's
+  permission policy and confirmation gates like any other intent.
+
+**Residual:** a local process (T1) can still post gestures, exactly as
+it could already drive `/cmd` or type keystrokes. Covered by B1, not by
+this server. Tests: `tests/test_airboard.py` (foreign Host, cross-origin
+POST, payload validation).
 
 ---
 
@@ -535,6 +584,7 @@ one-time signal, not a standing control, until CI exists to make it one.
 | B5 | Desktop ↔ phone | mTLS + device certs | ✅ M18 Phase 3 |
 | B6 | Machine ↔ LLM provider | Privacy tiers | ✅ M20 |
 | B7 | Identification ↔ authorization | Device possession, never voice | ✅ M18 Phase 3 |
+| B8 | Browser web pages ↔ Airboard (gesture → intent) | Host allowlist + POST Origin check + payload validation (§4.11) | ✅ Airboard |
 
 **B3, previously the boundary that did not exist, is now enforced (M21)** —
 see §4.1. The remaining ceiling: the taint signal is coarse (whole-turn, not

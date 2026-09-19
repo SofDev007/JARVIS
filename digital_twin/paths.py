@@ -1,7 +1,7 @@
 """Asset path resolution: make repo-relative paths survive a wheel.
 
 Configuration defaults reference assets by repo-relative path
-(``config/default_config.yaml``, ``models/hand_landmarker.task``). From
+(``config/default_config.yaml``, ``models/<vosk-model>``). From
 a checkout that just works; from a wheel install the working directory
 can be anywhere. :func:`resolve_asset` searches, in order:
 

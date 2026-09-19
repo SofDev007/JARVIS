@@ -9,7 +9,9 @@
 # is exactly the kind of silent cross-contamination a lockfile exists to
 # prevent (see THREAT_MODEL.md §4.10).
 #
-# Scope: core + [gesture, encryption, keyring, voice, tts] + [dev].
+# Scope: core + [encryption, keyring, voice, tts] + [dev]. (The old
+# [gesture] extra is gone: hand tracking runs in the Airboard browser
+# page, so mediapipe/opencv and their deps are no longer locked.)
 # Deliberately EXCLUDES [browser] (playwright — needs a separate ~300MB
 # browser binary download via `playwright install chromium`, orthogonal
 # to Python packages) and [semantic] (sentence-transformers — pulls in
@@ -21,7 +23,7 @@
 #
 #   python -m venv .venv_lock
 #   .venv_lock\Scripts\python.exe -m pip install --upgrade pip
-#   .venv_lock\Scripts\python.exe -m pip install ".[gesture,encryption,keyring,voice,tts,dev]"
+#   .venv_lock\Scripts\python.exe -m pip install ".[encryption,keyring,voice,tts,dev]"
 #   .venv_lock\Scripts\python.exe -m pip freeze --exclude digital-twin-assistant > requirements-lock.txt
 #   Remove-Item -Recurse -Force .venv_lock
 #
@@ -35,44 +37,32 @@
 # opencv-python-headless. Fixed here by declaring opencv-contrib-python
 # instead of opencv-python in the gesture extra (see pyproject.toml).
 
-absl-py==2.5.0
 certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.1
 colorama==0.4.6
-contourpy==1.4.0
 cryptography==50.0.1
-cycler==0.12.1
 flatbuffers==25.12.19
-fonttools==4.65.0
 idna==3.20
 iniconfig==2.3.0
 jaraco.classes==3.4.0
 jaraco.context==6.1.2
 jaraco.functools==4.6.0
 keyring==25.7.0
-kiwisolver==1.5.1
-matplotlib==3.11.2
-mediapipe==1.0.1
 more-itertools==11.1.0
 numpy==2.5.3
 onnxruntime==1.30.0
-opencv-contrib-python==5.0.0.93
 packaging==26.3
 pathvalidate==3.3.1
-pillow==12.3.0
 piper-tts==1.8.0
 pluggy==1.6.0
 protobuf==7.36.2
 pycparser==3.0
 Pygments==2.21.0
-pyparsing==3.3.2
 pytest==9.1.1
-python-dateutil==2.9.0.post0
 pywin32-ctypes==0.2.3
 PyYAML==6.0.3
 requests==2.34.2
-six==1.17.0
 sounddevice==0.5.6
 srt==3.5.3
 tqdm==4.70.1
