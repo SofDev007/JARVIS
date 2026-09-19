@@ -9,7 +9,7 @@
 //
 // Landmarks are [x, y, z] in *selfie* image space (x right, y down), the
 // same layout the rules were tuned on. fromMediaPipe() converts the raw,
-// un-mirrored camera landmarks the page gets from HandLandmarker.
+// un-mirrored camera landmarks and handedness label from HandLandmarker.
 // Adding a gesture = one entry in RULES.
 
 const WRIST = 0, THUMB_TIP = 4, INDEX_MCP = 5, INDEX_TIP = 8, MIDDLE_MCP = 9;
@@ -18,7 +18,7 @@ const JOINTS = {
   ring: [13, 14, 15, 16], pinky: [17, 18, 19, 20],
 };
 
-export const MIN_CONFIDENCE = 0.55;
+const MIN_CONFIDENCE = 0.55;
 
 // ---- vector helpers -------------------------------------------------------
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -121,8 +121,16 @@ export function classify(L) {
   return best;
 }
 
-/** Raw HandLandmarker output (un-mirrored) -> selfie-space [x, y, z] arrays. */
-export const fromMediaPipe = (lms) => lms.map((p) => [1 - p.x, p.y, p.z || 0]);
+/**
+ * One raw HandLandmarker hand (un-mirrored camera frame) -> `{hand, L}` in
+ * selfie space: x is flipped, and the "Left"/"Right" label is swapped
+ * because MediaPipe labels hands as if the image were already mirrored.
+ * Returns null for an unlabelled hand.
+ */
+export function fromMediaPipe(lms, label) {
+  const hand = label === "Left" ? "right" : label === "Right" ? "left" : null;
+  return hand && { hand, L: lms.map((p) => [1 - p.x, p.y, p.z || 0]) };
+}
 
 // ---- temporal stabilisation (per hand) ------------------------------------
 export class Stabilizer {

@@ -120,7 +120,6 @@ dashboard:
   host: 127.0.0.1              # loopback only unless allow_remote: true
   port: 8787                   # http://127.0.0.1:8787 (0 = ephemeral)
   allow_remote: false          # binding beyond loopback is an explicit act
-  remote_hosts: []             # with allow_remote: extra host names browsers may use
   recent_events: 200           # live event feed ring buffer
   # Set security.confirmation: web to approve/deny actions in the
   # dashboard instead of the terminal — this resolves the stdin conflict
@@ -131,6 +130,7 @@ airboard:
   host: 127.0.0.1              # loopback only unless allow_remote: true
   port: 8794                   # http://127.0.0.1:8794 (0 = ephemeral)
   allow_remote: false          # binding beyond loopback is an explicit act
+  remote_hosts: []             # with allow_remote: extra host names browsers may use
   name: JARVIS                  # shown in the page UI
   state_timeout_s: 600          # a stale agent state decays to idle after this
   state_dir: data/airboard/state

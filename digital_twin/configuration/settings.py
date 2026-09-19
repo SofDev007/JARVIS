@@ -994,13 +994,14 @@ def _validate(config: AppConfig) -> AppConfig:
     return config
 
 
-#: Config sections a user profile is allowed to override.
-_PROFILE_SECTIONS = frozenset({"airboard", "intent"})
-#: Within ``airboard``, only per-user gesture calibration — never the
+#: What a user profile may override: section -> allowed keys (None = any).
+#: ``airboard`` is limited to per-user gesture calibration — never the
 #: server's host/port/allow_remote.
-_PROFILE_AIRBOARD_KEYS = frozenset(
-    {"gesture_thresholds", "disabled_gestures", "repeat_interval_s"}
-)
+_PROFILE_KEYS: dict[str, frozenset[str] | None] = {
+    "airboard": frozenset(
+        {"gesture_thresholds", "disabled_gestures", "repeat_interval_s"}),
+    "intent": None,
+}
 
 
 def _apply_profile(config: AppConfig, profile_name: str) -> AppConfig:
@@ -1018,18 +1019,19 @@ def _apply_profile(config: AppConfig, profile_name: str) -> AppConfig:
             f"Unknown profile {profile_name!r}; available: {sorted(available)}"
         )
     overrides = available[profile_name]
-    illegal = set(overrides) - _PROFILE_SECTIONS
+    illegal = set(overrides) - set(_PROFILE_KEYS)
+    for section, keys in _PROFILE_KEYS.items():
+        body = overrides.get(section, {})
+        if not isinstance(body, dict):
+            illegal.add(section)
+        elif keys is not None:
+            illegal |= {f"{section}.{k}" for k in set(body) - keys}
     if illegal:
+        allowed = [s if k is None else f"{s}.{{{', '.join(sorted(k))}}}"
+                   for s, k in _PROFILE_KEYS.items()]
         raise ValueError(
-            f"Profile {profile_name!r} may only override "
-            f"{sorted(_PROFILE_SECTIONS)}; found {sorted(illegal)}"
-        )
-    board = overrides.get("airboard", {})
-    illegal = set(board) - _PROFILE_AIRBOARD_KEYS if isinstance(board, dict) else {"airboard"}
-    if illegal:
-        raise ValueError(
-            f"Profile {profile_name!r} may only override airboard "
-            f"{sorted(_PROFILE_AIRBOARD_KEYS)}; found {sorted(illegal)}"
+            f"Profile {profile_name!r} may only override {allowed}; "
+            f"found {sorted(illegal)}"
         )
     if not overrides:
         return config

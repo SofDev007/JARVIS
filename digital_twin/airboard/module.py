@@ -20,7 +20,6 @@ import threading
 import time
 from typing import Any
 
-from digital_twin.airboard.orbs import load_orbs
 from digital_twin.airboard.server import AirboardServer
 from digital_twin.configuration.settings import AirboardConfig
 from digital_twin.core.events import Event, Topics
@@ -73,20 +72,8 @@ class AirboardModule(BaseModule):
         return self._server.port
 
     def _on_start(self) -> None:
-        orbs = load_orbs(self._config.orbs_file)
-        self._server = AirboardServer(
-            self._config.host,
-            self._config.port,
-            name=self._config.name,
-            orbs=orbs,
-            media_dir=self._config.media_dir,
-            state_dir=self._config.state_dir,
-            state_timeout_s=self._config.state_timeout_s,
-            allow_remote=self._config.allow_remote,
-            remote_hosts=tuple(self._config.remote_hosts),
-            on_perception=self.on_perception,
-            orb_source=self.orb_view,
-        )
+        self._server = AirboardServer.from_config(
+            self._config, on_perception=self.on_perception, orb_source=self.orb_view)
         self._server.start()
         sub = self._bus.subscribe
         self._subscriptions = [
@@ -168,10 +155,11 @@ class AirboardModule(BaseModule):
             current[g["hand"]] = (g["gesture"], g["confidence"])
         with self._lock:
             if now - self._last_seen > _STALE_S:
-                self._last_gesture = {}
+                # The page closed or froze: its hands left, edges re-arm.
+                self._diff_presence(set())
             self._last_seen = now
             self._diff_presence(set(hands))
-            self._diff_gestures(current, set(hands), now)
+            self._diff_gestures(current, now)
 
     def _diff_presence(self, hands_present: set[str]) -> None:
         for hand in sorted(hands_present - self._present):
@@ -179,16 +167,11 @@ class AirboardModule(BaseModule):
         for hand in sorted(self._present - hands_present):
             self._publish_hand(hand, present=False)
             self._last_gesture.pop(hand, None)
-        # ponytail: if the page closes mid-gesture no "hand left" event fires
-        # until the next heartbeat; add a watchdog if a consumer needs it.
+        # ponytail: a page that closes mid-gesture reports "hand left" only
+        # on its next heartbeat; add a watchdog if a consumer needs it sooner.
         self._present = hands_present
 
-    def _diff_gestures(
-        self,
-        current: dict[str, tuple[str, float]],
-        hands_present: set[str],
-        now: float,
-    ) -> None:
+    def _diff_gestures(self, current: dict[str, tuple[str, float]], now: float) -> None:
         repeat_every = self._config.repeat_interval_s
         for hand, (gesture, confidence) in current.items():
             previous = self._last_gesture.get(hand)
@@ -198,10 +181,10 @@ class AirboardModule(BaseModule):
             elif repeat_every > 0 and now - previous[1] >= repeat_every:
                 self._publish_gesture(hand, gesture, confidence, repeat=True)
                 self._last_gesture[hand] = (gesture, now)
-        # A visible hand with no stable gesture re-arms its edge.
-        for hand in list(self._last_gesture):
-            if hand in hands_present and hand not in current:
-                del self._last_gesture[hand]
+        # A visible hand with no stable gesture re-arms its edge (hands that
+        # left were already dropped by _diff_presence).
+        for hand in self._last_gesture.keys() - current.keys():
+            del self._last_gesture[hand]
 
     def _publish_gesture(
         self, hand: str, gesture: str, confidence: float, repeat: bool

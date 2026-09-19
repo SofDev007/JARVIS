@@ -455,7 +455,6 @@ function summonWidget(w) {
 // and leaves only rim brightness to carry state.
 const RING = {
   data: { state: "idle", mood: "green", wave: null }, amp: 0, gmax: 1,
-  live: 0,
   // per-state targets: breath, ripple speed, swirl, rim gain
   STATES: {
     idle:      { breath: 1.0, ripple: 0.6, swirl: 0.0, rim: 0.15 },
@@ -468,7 +467,7 @@ const RING = {
 };
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)");
 setInterval(async () => {
-  if (!RING.live) return;               // poll only while a blob is up
+  if (!RINGS.size) return;              // poll only while a blob is up
   try {
     const r = await fetch("/orb", { cache: "no-store" });
     if (r.ok) RING.data = await r.json();
@@ -480,14 +479,14 @@ function ringAmp(t) {
   // musical decay. Without a live waveform (TTS publishes none), a
   // speech-like syllable envelope stands in.
   const d = RING.data;
-  const wave = d.wave && (d.wave.samples || d.wave);
+  const wave = d.wave?.samples;
   let target = 0;
   if (d.state === "speaking") {
     if (wave && wave.length) {
       let s = 0, pk = 0;
       for (const v of wave) { s += v * v; pk = Math.max(pk, Math.abs(v)); }
       const raw = 0.6 * Math.sqrt(s / wave.length) + 0.4 * pk;
-      RING.gmax = Math.max(raw, (RING.gmax || 1) * 0.995);
+      RING.gmax = Math.max(raw, RING.gmax * 0.995);
       target = Math.pow(Math.min(1, raw / Math.max(3, RING.gmax)), 2.2);
     } else {
       target = 0.35 + 0.3 * Math.abs(Math.sin(t * 7.3) * Math.sin(t * 2.9));
@@ -691,7 +690,6 @@ function renderRings() {
                   sc.held = holder.grabbedBy.length > 0; }
     drawRing(sc);
   });
-  RING.live = RINGS.size;
 }
 
 // ---- 3D HOLOGRAMS —
@@ -2829,13 +2827,11 @@ async function boot() {
       // ---- NAMED GESTURES for JARVIS (gestures.js)
       NAMED.hands = []; NAMED.gestures = [];
       (res.landmarks || []).forEach((lms, i) => {
-        const label = res.handedness?.[i]?.[0]?.categoryName;
-        // MediaPipe labels hands as if the image were mirrored; this
-        // camera frame is not, so the label is swapped.
-        const hand = label === "Left" ? "right" : label === "Right" ? "left" : null;
-        if (!hand || NAMED.hands.includes(hand)) return;
+        const h = fromMediaPipe(lms, res.handedness?.[i]?.[0]?.categoryName);
+        if (!h || NAMED.hands.includes(h.hand)) return;
+        const hand = h.hand;
         NAMED.hands.push(hand);
-        const g = gestureEngine.process(hand, fromMediaPipe(lms));
+        const g = gestureEngine.process(hand, h.L);
         if (g) NAMED.gestures.push({ hand, gesture: g.gesture,
                                      confidence: +g.confidence.toFixed(3) });
       });

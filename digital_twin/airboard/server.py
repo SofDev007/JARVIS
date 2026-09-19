@@ -65,7 +65,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 
-from digital_twin.airboard.orbs import Orb, media_root as compute_media_root
+from digital_twin.airboard.orbs import Orb, load_orbs, media_root as compute_media_root
 from digital_twin.airboard.orbs import resolve_root
 
 logger = logging.getLogger(__name__)
@@ -249,10 +249,24 @@ class AirboardServer:
                 else:
                     self._json(404, {"error": "not found"})
 
-        self._closing = False
         self._server = ThreadingHTTPServer((host, port), Handler)
         self._server.daemon_threads = True
         self._thread: threading.Thread | None = None
+
+    @classmethod
+    def from_config(cls, config, **hooks) -> "AirboardServer":
+        """Build from an ``AirboardConfig`` — the one place config fields
+        map to server arguments (kernel module and standalone runner alike).
+        ``hooks``: ``on_perception`` / ``orb_source``."""
+        return cls(
+            config.host, config.port,
+            name=config.name, orbs=load_orbs(config.orbs_file),
+            media_dir=config.media_dir, state_dir=config.state_dir,
+            state_timeout_s=config.state_timeout_s,
+            allow_remote=config.allow_remote,
+            remote_hosts=tuple(config.remote_hosts),
+            **hooks,
+        )
 
     # ------------------------------------------------------------------
     # Endpoint bodies (kept off the Handler so they're testable directly)
@@ -453,7 +467,6 @@ class AirboardServer:
                     self._server.server_address[0], self.port)
 
     def stop(self) -> None:
-        self._closing = True
         self._server.shutdown()
         self._server.server_close()
         if self._thread is not None:

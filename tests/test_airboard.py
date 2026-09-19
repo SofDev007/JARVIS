@@ -319,10 +319,13 @@ def test_disabled_gestures_and_thresholds(tmp_path, bus):
 def test_heartbeat_gap_re_arms_held_gesture(bus, board):
     """Page closed and reopened while holding the same gesture: fire again."""
     events = _record(bus, Topics.GESTURE)
+    hands = _record(bus, Topics.HAND)
     board.on_perception(["right"], [_g("right", "ok")], now=100.0)
     board.on_perception(["right"], [_g("right", "ok")], now=105.0)
     bus.flush(timeout=2.0)
     assert len(events) == 2
+    # the gap reads as the hand leaving and coming back
+    assert [e.payload["present"] for e in hands] == [True, False, True]
 
 
 def test_paused_module_publishes_nothing(bus, board):
@@ -413,5 +416,21 @@ def test_allow_remote_keeps_the_host_and_origin_allowlist(tmp_path):
         # an allowed Host with a foreign Origin is still refused
         mixed = {"Host": f"board.tailnet:{port}", "Origin": f"http://evil.example:{port}"}
         assert _post(port, "/state", b"{}", mixed)[0] == 403
+    finally:
+        srv.stop()
+
+
+def test_from_config_carries_remote_access_settings(tmp_path):
+    """Kernel module and standalone runner both build via from_config, so
+    remote_hosts can never be dropped by one entry point again."""
+    config = AirboardConfig(
+        port=0, allow_remote=True, remote_hosts=["board.tailnet"],
+        state_dir=str(tmp_path / "s"), media_dir=str(tmp_path / "m"),
+        orbs_file=str(tmp_path / "none.yaml"))
+    srv = AirboardServer.from_config(config)
+    srv.start()
+    try:
+        host = {"Host": f"board.tailnet:{srv.port}"}
+        assert _get(srv.port, "/config", host)[0] == 200
     finally:
         srv.stop()
