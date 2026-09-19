@@ -2,7 +2,9 @@
 #
 #   pip install -r requirements.txt
 #
-# Python 3.10+ recommended.
+# Python >=3.10,<3.14. Prefer a project-local venv (see requirements-lock.txt
+# for an exact-version, resolved-clean set — regenerate it after any change
+# here rather than trusting a shared/global install).
 
 # Event kernel
 PyYAML>=6.0            # configuration files

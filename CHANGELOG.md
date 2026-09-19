@@ -45,6 +45,102 @@ tracked hands and fought over the webcam. They are now one thing: **Airboard**.
 - The ring's speaking pulse read `wave.length` on a `{samples: [...]}`
   object and never animated.
 
+## [Unreleased] — Milestone 25: Dependency supply chain hygiene
+
+### Added
+- **`requirements-lock.txt`**: exact-version dependency lock, generated
+  from a clean, project-only venv (deliberately *not* frozen from this
+  machine's shared global Python — see the file's own header for why:
+  that environment had Django, Flask, mysql-connector, a Jupyter stack,
+  and an unrelated project's package installed alongside this one).
+  Scoped to `[gesture,encryption,keyring,voice,tts,dev]`; `[browser]` and
+  `[semantic]` excluded (heavy, orthogonal, not used by default config)
+  and noted as such in the file.
+- `requires-python = ">=3.10,<3.14"` in `pyproject.toml` (was unbounded).
+  No CI actually exists in this repo despite an earlier CHANGELOG entry
+  claiming one — the bound was chosen to keep the Python version that
+  ran this milestone's own test suite (3.13) supported, not to match a
+  CI matrix that isn't there.
+- One `pip-audit` pass against the clean lock venv (ephemeral — not
+  added as a project dependency): no known vulnerabilities found across
+  the full locked set.
+
+### Fixed / Security
+- **A second live instance of the OpenCV conflict M18 Phase 1 fixed.**
+  Building the lockfile in a real clean venv (instead of trusting the
+  polluted global one) surfaced that `mediapipe>=1.0` now hard-requires
+  `opencv-contrib-python`, while `pyproject.toml`'s `gesture` extra also
+  declared `opencv-python` — installing both put two packages providing
+  the same `cv2` import on disk again, just with `-contrib-` instead of
+  `-headless` this time. Fixed by declaring `opencv-contrib-python`
+  instead of `opencv-python` in both `pyproject.toml` and
+  `requirements.txt`; confirmed a clean install now resolves to exactly
+  one `cv2` provider, and the full test suite (504/506, same 2
+  pre-existing unrelated failures) still passes under it.
+
+## [Unreleased] — Milestone 24: Adversarial plugin sandbox suite
+
+### Added
+- **Red-team test suite** for the subprocess plugin sandbox
+  (`tests/test_plugin_sandbox_redteam.py`, 5 tests): deliberate escape
+  attempts rather than functional exercise — environment inspection, a
+  raw-stdout protocol desync, an unresponsive child, and a
+  process-spawning grandchild. Closes THREAT_MODEL.md §4.7's "not
+  adversarially tested" residual.
+
+### Fixed / Security
+- **Environment variable leak** (`digital_twin/plugins/sandbox.py`):
+  `subprocess.Popen` with no `env=` inherited the parent's full
+  environment — a sandboxed plugin could read `os.environ["GEMINI_API_KEY"]`
+  (or any other secret set via the documented env-var fallback) directly,
+  contradicting the documented isolation claim. Fixed with `_child_env()`,
+  an explicit allowlist (PATH, SYSTEMROOT, TEMP, locale/encoding — nothing
+  secret-bearing); confirmed closed with a live repro before and after.
+- **Orphaned grandchild process** (`digital_twin/plugins/sandbox.py`): a
+  plugin that spawned its own subprocess and exited left that subprocess
+  running after `SandboxedPlugin.close()` — confirmed with a real PID
+  still alive post-close. Root cause was two-fold: (1) a bare
+  `Popen.kill()` only signals the immediate child on Windows, no
+  descendants — fixed with `_kill_tree()` (`taskkill /T /F` on Windows,
+  process-group kill via `start_new_session=True` on POSIX); (2) `close()`
+  used to send a polite `{"op": "shutdown"}` message and wait for a
+  graceful exit before falling back to a kill — but `taskkill /T` needs
+  the *parent* PID still alive to walk its process tree, so waiting for
+  graceful exit first always lost the race. Fixed by dropping the polite
+  handshake entirely: `close()` now sweeps immediately every time.
+
+## [Unreleased] — Milestone 23: Ingestion quarantine
+
+### Added
+- **Ingestion quarantine** (`digital_twin/knowledge/quarantine.py`,
+  `IngestionQuarantine`): the folder watcher no longer auto-ingests a new
+  or changed document — it extracts the text, checks it's not already in
+  the store (`KnowledgeStore.find_by_content_hash`, read-only), and
+  offers it for review instead of writing it in. The write only happens
+  on `KnowledgeWatchModule.approve(id)`, a human decision; `reject(id)`
+  discards it and remembers the content hash so it isn't re-offered every
+  scan. Closes THREAT_MODEL.md §4.1 control #5, explicitly scoped out of
+  M21.
+- **Dashboard panel**: `GET /api/quarantine` lists pending documents;
+  `POST /api/quarantine/<id>` `{"approve": true|false}` resolves one,
+  token-guarded like every other state-changing dashboard endpoint. Wired
+  through `DashboardModule`/`DashboardServer` exactly like the existing
+  confirmations panel, but with no timeout — a document sits until a
+  human looks at it, not until a clock runs out.
+- `KnowledgeStore.find_by_content_hash` / `compute_content_hash`: the
+  read-only half of `ingest`'s existing dedup check, factored out so a
+  caller can ask "would this be new content?" without writing anything.
+- 4 new tests in `tests/test_document_ingestion.py` (queue-not-ingest,
+  approve writes through, reject doesn't re-offer, unknown id refused)
+  and 1 in `tests/test_dashboard.py` (the endpoint end to end, including
+  the missing-token 403).
+
+### Changed
+- `KnowledgeWatchModule.scan_once()` now returns the count of newly
+  *queued* documents, not ingested ones — existing tests asserting
+  auto-ingest behavior were updated to the new approve/reject flow
+  (`digital_twin/knowledge/watch.py`'s docstring was updated to match).
+
 ## [Unreleased] — Milestone 18: ACL hardening & audit integrity
 
 ### Phase 1 — dependency and config repair (already landed)

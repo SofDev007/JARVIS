@@ -1,4 +1,4 @@
-# Digital Twin AI Assistant
+# JARVIS
 
 A cross-platform, multimodal desktop AI assistant built as a set of
 independent, replaceable modules communicating over an event bus. Perception

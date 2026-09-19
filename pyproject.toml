@@ -22,7 +22,7 @@ name = "digital-twin-assistant"
 version = "0.17.0"
 description = "Modular, multimodal desktop AI assistant: browser hand gestures (Airboard), chat, voice, screen OCR, files, plugins, browser — behind an event bus and hard permission gates."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "Vansh" }]
 dependencies = [

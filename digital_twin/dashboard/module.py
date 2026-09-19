@@ -66,6 +66,7 @@ class DashboardModule(BaseModule):
         device_registry=None,  # M18 Phase 3: DeviceRegistry for mTLS
         device_confirmation=None,  # M18 Phase 3: DeviceConfirmationProvider
         security_config=None,  # M18 Phase 3: SecurityConfig for devices_dir
+        knowledge_watch=None,  # KnowledgeWatchModule for the quarantine panel
     ):
         super().__init__()
         self._config = config
@@ -80,6 +81,7 @@ class DashboardModule(BaseModule):
         self._device_registry = device_registry
         self._device_confirmation = device_confirmation
         self._security_config = security_config
+        self._knowledge_watch = knowledge_watch
         self._events: deque[dict[str, Any]] = deque(
             maxlen=config.recent_events)
         self._events_lock = threading.Lock()
@@ -113,6 +115,8 @@ class DashboardModule(BaseModule):
         data_sources["plugins"] = self._plugins_view
         if self._app_config is not None:
             data_sources["settings"] = self._settings_view
+        if self._knowledge_watch is not None:
+            data_sources["quarantine"] = self._quarantine_view
 
         # M18 Phase 3: Use device confirmation for DANGEROUS actions if available
         confirmations = self._confirmations
@@ -132,6 +136,9 @@ class DashboardModule(BaseModule):
             frame_hub=self._frame_hub,
             device_registry=self._device_registry,
             device_confirmation=self._device_confirmation,
+            quarantine_resolve=(self._resolve_quarantine
+                                if self._knowledge_watch is not None
+                                else None),
         )
         self._server.start()
 
@@ -231,6 +238,14 @@ class DashboardModule(BaseModule):
             source=self.name,
             payload={"text": text, "user": "dashboard"},
         ))
+
+    def _quarantine_view(self) -> dict[str, Any]:
+        return {"pending": self._knowledge_watch.pending()}
+
+    def _resolve_quarantine(self, quarantine_id: str, approved: bool) -> bool:
+        if approved:
+            return self._knowledge_watch.approve(quarantine_id)
+        return self._knowledge_watch.reject(quarantine_id)
 
     def _plugins_view(self) -> dict[str, Any]:
         plugins = [{

@@ -62,16 +62,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _console_reporter(event: Event) -> None:
-    """Human-readable event trace on stdout (the kernel's minimal 'UI')."""
-    if event.topic == Topics.CHAT_RESPONSE:
-        print(f"\nAssistant: {event.payload.get('text')}")
-        reasoning = event.payload.get("reasoning")
-        if reasoning:
-            print(f"  (reasoning: {reasoning})")
-        return
-    if event.topic == Topics.CHAT:
-        return  # the user just typed it; echoing is noise
-    print(f"  {event}")
+    """Human-readable event trace on stdout (the kernel's minimal 'UI').
+
+    Deliberately narrow: only the assistant's spoken reply. Everything else
+    (module lifecycle, action gating, raw event payloads) still goes to the
+    log file at INFO — see ``_VOICE_CONSOLE_LOGGERS`` in logging_setup.py
+    for the handful of voice-pipeline log lines (wake word, mic open/close,
+    heard text) that are also allowed through to the console.
+    """
+    print(f"\nAssistant: {event.payload.get('text')}")
+    reasoning = event.payload.get("reasoning")
+    if reasoning:
+        print(f"  (reasoning: {reasoning})")
 
 
 def build_registry(config: AppConfig, bus: EventBus) -> ModuleRegistry:
@@ -193,6 +195,13 @@ def build_registry(config: AppConfig, bus: EventBus) -> ModuleRegistry:
             except Exception:
                 dash_memory = None
 
+        dash_knowledge_watch = None
+        if config.knowledge.enabled and config.knowledge.watch_paths:
+            try:
+                dash_knowledge_watch = registry.get("knowledge_watch")
+            except Exception:
+                dash_knowledge_watch = None
+
         # M18 Phase 3: Device registry and device confirmation for mTLS
         device_registry = None
         device_confirmation = None
@@ -237,6 +246,7 @@ def build_registry(config: AppConfig, bus: EventBus) -> ModuleRegistry:
             device_registry=device_registry,
             device_confirmation=device_confirmation,
             security_config=config.security,
+            knowledge_watch=dash_knowledge_watch,
         ))
         logger.info("Dashboard will listen on http://%s:%s",
                     config.dashboard.host, config.dashboard.port)
@@ -329,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         slow_handler_warn_ms=config.bus.slow_handler_warn_ms,
     )
     bus.start()
-    bus.subscribe("*", _console_reporter, name="console")
+    bus.subscribe(Topics.CHAT_RESPONSE, _console_reporter, name="console")
 
     try:
         registry = build_registry(config, bus)

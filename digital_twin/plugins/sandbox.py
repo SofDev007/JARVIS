@@ -28,6 +28,8 @@ import atexit
 import itertools
 import json
 import logging
+import os
+import signal
 import subprocess
 import sys
 import threading
@@ -41,6 +43,62 @@ from digital_twin.security.permissions import RiskLevel
 logger = logging.getLogger(__name__)
 
 _HANDSHAKE_TIMEOUT_S = 15.0
+
+#: Environment variables the child needs to run a clean Python process —
+#: nothing secret-bearing. `subprocess.Popen` with no `env=` inherits the
+#: FULL parent environment by default, which would hand a sandboxed
+#: plugin any API key an operator set via the documented env-var fallback
+#: (THREAT_MODEL.md §4.7 red-team finding: `os.environ.get("GEMINI_API_KEY")`
+#: was directly readable from inside the "isolated" child). Passing an
+#: explicit allowlist instead is the fix; only variables actually present
+#: are forwarded, nothing is fabricated.
+_CHILD_ENV_ALLOWLIST = (
+    "PATH", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE",
+    "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PATHEXT", "COMSPEC",
+    "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
+    "PYTHONIOENCODING", "PYTHONUTF8",
+)
+
+
+def _child_env() -> dict[str, str]:
+    return {key: os.environ[key] for key in _CHILD_ENV_ALLOWLIST
+            if key in os.environ}
+
+
+def _kill_tree(process: subprocess.Popen) -> None:
+    """Kill the child AND any descendants it spawned — unconditionally,
+    even if the immediate child has already exited on its own.
+
+    That last part is the fix, not an edge case: a hostile plugin's
+    grandchild survives its *parent* exiting normally — a plugin that
+    spawns a detached subprocess then answers the shutdown request and
+    exits cleanly leaves the grandchild running, and the immediate child
+    being gone is exactly the common case (graceful shutdown succeeds
+    almost every time). An earlier version of this helper skipped the
+    sweep whenever ``process.poll() is not None``, which meant the sweep
+    it existed to perform almost never ran (THREAT_MODEL.md §4.7 red-team
+    finding, confirmed with a real grandchild surviving `close()`).
+    ``taskkill /T`` walks the OS-recorded process tree by PID lineage —
+    no special process-group setup needed on Windows, and it still finds
+    a just-exited PID's children in practice. On POSIX, killing the
+    session/process-group `start_new_session=True` put the child in
+    covers the same case.
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                capture_output=True, timeout=5.0)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if process.poll() is None:
+            process.kill()
+    else:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            if process.poll() is None:
+                process.kill()
 
 
 class SandboxError(RuntimeError):
@@ -65,6 +123,8 @@ class SandboxedPlugin:
             stderr=subprocess.DEVNULL,
             text=True,
             cwd=str(Path(__file__).resolve().parents[2]),  # repo root
+            env=_child_env(),
+            start_new_session=True,  # POSIX: own process group, for _kill_tree
         )
         atexit.register(self.close)
         hello = self._read(timeout_s=_HANDSHAKE_TIMEOUT_S)
@@ -101,7 +161,7 @@ class SandboxedPlugin:
         thread.start()
         thread.join(timeout_s)
         if thread.is_alive():
-            self._process.kill()
+            _kill_tree(self._process)
             raise SandboxError(
                 f"plugin '{self._manifest.name}' did not answer within "
                 f"{timeout_s:.0f}s — killed"
@@ -142,7 +202,7 @@ class SandboxedPlugin:
                     "restart to reload the plugin")
             if answer.get("id") != request_id:
                 self._dead = "protocol desync"
-                self._process.kill()
+                _kill_tree(self._process)
                 raise ValueError(
                     f"plugin '{self._manifest.name}' answered out of order "
                     "— killed (kernel unaffected)")
@@ -186,15 +246,12 @@ class SandboxedPlugin:
         return self._dead is None and self._process.poll() is None
 
     def close(self) -> None:
-        if self._process.poll() is None:
-            try:
-                self._process.stdin.write(
-                    json.dumps({"id": "bye", "op": "shutdown"}) + "\n")
-                self._process.stdin.flush()
-            except OSError:
-                pass
-            try:
-                self._process.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
+        # No polite "{op: shutdown}" message first: writing it and then
+        # calling _kill_tree is a race the child usually wins — it reads
+        # and exits before our next line of Python runs, and once it has
+        # exited, taskkill /T has no live parent PID left to walk and
+        # finds none of its children (confirmed while diagnosing this
+        # fix: the grandchild-still-alive repro only started passing once
+        # the shutdown message was removed). Skip straight to the kill.
+        _kill_tree(self._process)
         self._dead = self._dead or "closed"

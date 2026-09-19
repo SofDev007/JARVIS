@@ -178,14 +178,39 @@ logging, or the model's own `"remember"` field — not an external injection
 surface. Including it would falsely taint nearly every turn once any fact
 has ever been recalled.
 
-**Scoped out, explicitly — control #5 (ingestion quarantine):** "Folder
-watching should quarantine new documents pending approval rather than
-auto-indexing" is a separate, real feature (a pending-approval queue plus
-an approve/reject action) and was not built in M21. The folder watcher
-still auto-ingests as `local_only` (§4.8/M20) but without a human gate on
-*when* new content enters the corpus. Natural follow-up, not a
-prerequisite — the four controls implemented here are the ones this
-document itself called highest-value.
+**Control #5 (ingestion quarantine) — landed M23, was scoped out of M21.**
+"Folder watching should quarantine new documents pending approval rather
+than auto-indexing" is now real: `digital_twin/knowledge/quarantine.py`
+(`IngestionQuarantine`) plus `KnowledgeWatchModule._consider` in
+`digital_twin/knowledge/watch.py` — a watched file is extracted and,
+unless its content already matches something in the store
+(`KnowledgeStore.find_by_content_hash`, a read-only pre-check so nothing
+is written before review), it's offered to the quarantine instead of
+ingested. The write only happens on `KnowledgeWatchModule.approve(id)`, a
+human decision surfaced as a dashboard panel (`GET /api/quarantine`,
+`POST /api/quarantine/<id>` `{"approve": true|false}`, token-guarded like
+every other state-changing dashboard endpoint). A rejection is remembered
+by content hash so the same document isn't re-offered every scan
+interval; an approval writes through `KnowledgeStore.ingest` exactly as
+before, still defaulting to the `local_only` privacy tier (§4.8/M20) —
+this control gates *when* content enters the corpus, not where it's
+allowed to travel once it has.
+
+Deliberately **not** built on `ConfirmationProvider` (the dispatcher's
+existing confirm gate): that primitive blocks a worker on a short timeout
+and denies by default when nobody answers — exactly wrong for "found at
+3am, reviewed at 9am." `IngestionQuarantine` has no expiry; an entry sits
+until a human actually looks at it.
+
+**Ceiling, stated plainly:** the quarantine queue is in-memory, not
+persisted — a restart doesn't lose *content* (the watcher re-scans and
+re-offers anything not yet ingested) but does lose any rejection decided
+since the last content change, so a previously-rejected file is offered
+again after a restart until rejected again. Also unaddressed here: the
+`ingest_document`/`ingest_text` actions (chat/agent-invoked, already
+SENSITIVE/human-confirmed at the point of the call) never went through
+quarantine and still don't — the gap this control closes is specifically
+the *unattended* watcher path, which had no human step at all.
 
 **Ceiling, stated plainly:** the taint flag is coarse — it marks an entire
 turn tainted if *any* knowledge/screen content was included, whether or not
@@ -345,20 +370,58 @@ backend and is what the guard above actually reads.
 `server.py` compared the dashboard token with `==` (timing-observable).
 Now uses `secrets.compare_digest` on the encoded bytes.
 
-### 4.7 Plugin sandbox escape 🟡
+### 4.7 Plugin sandbox escape 🟡 M24 (adversarial suite landed; residual noted)
 
 **Actor:** T2 · **Asset:** A1, A3
 
-Subprocess isolation with manifest contracts. Sandbox tests pass (10/10) and
-correctly refuse secret access.
+Subprocess isolation with manifest contracts. Sandbox tests pass (10/10
+functional + 5/5 adversarial) and correctly refuse secret access.
 
-**Residual:** the sandbox has not been adversarially tested, only
-functionally tested. Passing tests means it blocks what we thought to check.
+**M24 — adversarial red-team suite, two real findings, both fixed:**
+`tests/test_plugin_sandbox_redteam.py` deliberately attacked the sandbox
+rather than just exercising it, and found:
 
-**Proposed:** a red-team test suite of deliberate escape attempts —
-filesystem traversal, environment inspection, IPC abuse, resource
-exhaustion. Not urgent while all plugins are first-party. Becomes urgent the
-moment a third-party plugin is installed.
+1. **Environment inspection (fixed).** `subprocess.Popen` with no `env=`
+   inherits the parent's *full* environment — a "sandboxed" plugin could
+   read `os.environ["GEMINI_API_KEY"]` (or any other secret set via the
+   documented env-var fallback) directly, contradicting the documented
+   claim that a sandboxed plugin cannot touch the secret store. Fixed:
+   `sandbox.py`'s `_child_env()` passes an explicit allowlist (PATH,
+   SYSTEMROOT, TEMP, locale/encoding variables — nothing secret-bearing)
+   instead of inheriting anything.
+2. **IPC abuse / orphaned descendants (fixed).** A plugin that spawns its
+   own subprocess and exits (or is killed) left that subprocess running
+   — confirmed with a real grandchild process still alive after
+   `SandboxedPlugin.close()`. Two compounding bugs: (a) a bare
+   `Popen.kill()` only signals the immediate child on Windows, no
+   descendants; (b) the fix for (a) — `taskkill /T`, which walks the
+   process tree by PID lineage — only works while the *parent* PID is
+   still alive to walk from, so waiting for a graceful shutdown first
+   (as `close()` used to) always lost the race: the child answers and
+   exits before the tree-kill runs. Fixed: `close()` no longer sends a
+   polite shutdown message at all — it goes straight to `_kill_tree()`,
+   which always sweeps (Windows: `taskkill /T /F`; POSIX: kill the
+   process group `start_new_session=True` put the child in), whether or
+   not the immediate child has already exited.
+
+**Residual, stated plainly — what the suite does *not* claim to contain:**
+filesystem and network access are **not** jailed for plugin code itself
+(no chroot/namespace; a plugin can read/write anywhere the OS user
+account can, and make arbitrary network calls) — this was never the
+sandbox's promise; the promise is API-surface scoping (no bus, no
+secrets, no other plugins) and lifecycle containment (a crash/hang/
+hostile child cannot outlive one call or one `close()`, and now no
+longer leaves a descendant behind either). Resource exhaustion (CPU/
+memory) has no cap beyond the per-call timeout killing a hung child —
+a plugin that allocates aggressively *during* a call within the timeout
+window is not stopped. OS-level sandboxing (seccomp/containers/job-object
+resource limits) remains unbuilt and is the actual fix for both of those,
+consistent with §4.7's original framing.
+
+**Not urgent while all plugins are first-party. Becomes urgent the moment
+a third-party plugin is installed** — unchanged from before this
+milestone; M24 raised the floor of what's contained, it didn't remove
+the need for OS-level sandboxing before trusting an untrusted plugin.
 
 ### 4.8 Cloud LLM data exposure ✅ M20
 
@@ -418,7 +481,7 @@ and executes. The phone should be incapable of leaking what it never has.
 Plus: hardware-backed key (Android Keystore), remote revocation, key expiry
 left **enabled** for the phone (disabled only for the laptop).
 
-### 4.10 Dependency supply chain 🟡
+### 4.10 Dependency supply chain ✅ M25
 
 **Actor:** T8
 
@@ -426,9 +489,50 @@ left **enabled** for the phone (disabled only for the laptop).
 environment. This is how two conflicting OpenCV builds came to be installed
 simultaneously and shadow each other into a broken import.
 
-**Proposed:** a project venv, a lockfile, an upper Python bound, and
-`pip-audit` in the loop. Housekeeping, but it is also the difference between
-a reproducible environment and a machine-specific one.
+**M25 — done, and it found a live recurrence of exactly that bug.**
+Building the lockfile meant actually creating a clean, project-only venv
+(installing straight into this machine's global Python confirmed the
+problem this section warns about: that environment had Django, Flask,
+mysql-connector, a full Jupyter stack, and an unrelated project's package
+installed alongside this one — freezing it would have committed that
+noise as if it were this project's dependency set). Installing cleanly
+surfaced a **second instance of the OpenCV conflict**: `mediapipe>=1.0`
+now hard-requires `opencv-contrib-python`, and `pyproject.toml`'s
+`gesture` extra *also* declared `opencv-python` — installing both put two
+packages providing the same `cv2` import back on disk, the identical
+failure mode as the `opencv-python-headless` conflict M18 Phase 1 fixed,
+just with a different second package this time. Fixed by declaring
+`opencv-contrib-python` instead of `opencv-python` (confirmed: a clean
+install now resolves to exactly one `cv2` provider; full test suite still
+504/506 passing — the same 2 pre-existing unrelated failures as before
+this change).
+
+Also landed: `requires-python = ">=3.10,<3.14"` (there is no CI running
+today despite the CHANGELOG's earlier claim of one — the upper bound was
+chosen to keep the Python actually running this project, 3.13, supported
+rather than retroactively declaring it unsupported); `requirements-lock.txt`
+(exact versions, generated from that clean venv, scoped to
+`[gesture,encryption,keyring,voice,tts,dev]` — `[browser]` and `[semantic]`
+excluded, noted in the file's own header, since neither is used by this
+project's default config and both pull in heavy, mostly-orthogonal
+downloads); one `pip-audit` pass against the clean venv, run ephemerally
+(not added as a permanent dependency) — **no known vulnerabilities**
+across the full locked set.
+
+*Airboard update:* the `[gesture]` extra was removed (hand tracking moved
+into the browser), so the lock was regenerated the same way for
+`[encryption,keyring,voice,tts,dev]`. That dropped mediapipe,
+opencv-contrib-python and their 10 exclusive dependencies. No `cv2`
+provider is installed any more, so the two OpenCV conflicts above can't
+recur. Every remaining pin is unchanged from the audited set, so the
+`pip-audit` result still holds.
+
+**Residual:** `requirements-lock.txt` is hand-regenerated (`pip freeze`
+from a fresh venv), not tool-managed (`pip-compile`/`poetry.lock`) — fine
+for now, but it will silently drift stale if a dependency changes and
+nobody remembers to regenerate it. `pip-audit` isn't wired into any
+repeated workflow (no CI exists to run it automatically) — it's a
+one-time signal, not a standing control, until CI exists to make it one.
 
 ### 4.11 Forged gestures via the Airboard heartbeat ✅ Airboard
 
@@ -532,30 +636,42 @@ Revisit the whole document if any of these change:
 | **M20** ✅ | Privacy tiers on memory and RAG; local-only routing | §4.8, B6 |
 | **M22** | Phone thin client, no secrets at rest, remote revoke | §4.9 |
 | **M21** ✅ | Prompt-injection controls — taint flag from RAG/OCR, untrusted content cannot silently originate actions, structural delimiting | §4.1, B3 |
-| **Unscheduled** | Adversarial plugin sandbox suite; venv + lockfile + `pip-audit` | §4.7, §4.10 |
-| **Unscheduled** | Ingestion quarantine — pending-approval queue for folder-watched documents (§4.1 control #5, scoped out of M21) | §4.1 |
+| **M23** ✅ | Ingestion quarantine — pending-approval queue for folder-watched documents, dashboard approve/reject panel (§4.1 control #5, scoped out of M21) | §4.1 |
+| **M24** ✅ | Adversarial plugin sandbox suite — env-var allowlist (closed a real secret-leak path), always-tree-kill on close (closed a real orphaned-descendant leak) | §4.7 |
+| **M25** ✅ | Dependency supply chain — clean-venv lockfile, upper Python bound, one `pip-audit` pass (clean, no CVEs), a *second* live OpenCV-conflict instance found and fixed | §4.10 |
+| **Unscheduled** | OS-level plugin sandboxing (seccomp/containers) | §4.7 residual |
 
 ---
 
 ## 9. Recommendation
 
-M18, M19, M20, and M21 are complete. The threat this section used to name
-as the highest-severity unaddressed item — §4.1, prompt injection — now has
-a control: untrusted RAG/OCR content is tagged (mechanically, not by asking
-the model to self-report) and refused, not merely confirmed, when it's the
-only thing that could justify a DANGEROUS action.
+M18, M19, M20, M21, M23, M24, and M25 are complete. The threat this section
+used to name as the highest-severity unaddressed item — §4.1, prompt
+injection — now has a control: untrusted RAG/OCR content is tagged
+(mechanically, not by asking the model to self-report) and refused, not
+merely confirmed, when it's the only thing that could justify a DANGEROUS
+action. §4.1's control #5 (ingestion quarantine), the one piece explicitly
+scoped out of M21, landed in M23: folder-watched documents now wait for a
+human approve/reject in the dashboard before entering the corpus at all.
+M24 red-teamed the plugin sandbox instead of only functionally testing it,
+and the two real findings it surfaced (an env-var secret leak, an
+orphaned-descendant-process leak) are both fixed. M25 built the lockfile
+the honest way — a clean venv, not the machine's shared global Python —
+and that process itself caught a *second* live instance of the exact
+OpenCV-conflict bug M18 Phase 1 fixed, now also closed.
 
-What remains, in rough priority order:
+What remains:
 
-1. **Ingestion quarantine** (§4.1 control #5, explicitly scoped out of
-   M21) — a pending-approval queue so folder-watched documents don't enter
-   the corpus without a human gate on *when*, not just *whether they can
-   originate actions once ingested*.
-2. **Adversarial plugin sandbox testing** (§4.7) — becomes urgent the
-   moment a third-party plugin is installed; not urgent while all plugins
-   are first-party.
-3. **Dependency supply chain hygiene** (§4.10) — venv, lockfile, upper
-   Python bound, `pip-audit` in the loop.
+1. **OS-level plugin sandboxing** (§4.7 residual) — seccomp/containers;
+   the actual fix for filesystem/network/resource containment, which the
+   subprocess boundary never claimed to provide. Not urgent while all
+   plugins are first-party; becomes urgent the moment a third-party one
+   is installed.
+2. **M22** (§4.9, phone thin client) — the next *scheduled* milestone;
+   unaffected by M23/M24/M25 landing out of numeric order ahead of it.
+3. **Keeping `requirements-lock.txt` current** (§4.10 residual) — it's
+   hand-regenerated, not tool-managed, and there's no CI to catch drift
+   automatically.
 
 An assistant that perceives everything and can act on the host has an
 attack surface that a chatbot does not. M18's controls protect the
