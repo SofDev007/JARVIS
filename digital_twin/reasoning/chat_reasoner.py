@@ -90,6 +90,37 @@ Prefer a single intent when one suffices; then "plan" must be null.
 """
 
 
+#: Said aloud when a reply arrives as unreadable JSON (usually truncated by
+#: ``llm.max_tokens`` mid-plan). Speaking the raw braces at the user is worse
+#: than admitting the reply was cut off.
+_CUT_OFF_REPLY = "Sorry, Boss — my reply got cut off. Ask me again?"
+
+
+def _salvage_reply(text: str) -> dict[str, Any]:
+    """Unparseable model output: rescue what's readable, never speak JSON.
+
+    A truncated decision still carries a complete ``"reply"`` (and often a
+    complete ``"intent"``) before the break, because the model writes them
+    first; the plan is the part that gets cut. Anything that still looks
+    like JSON is never returned verbatim.
+    """
+    def field(name: str) -> str | None:
+        match = re.search(rf'"{name}"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.DOTALL)
+        if match is None:
+            return None
+        try:
+            return json.loads(f'"{match.group(1)}"').strip() or None
+        except json.JSONDecodeError:
+            return match.group(1).strip() or None
+
+    reply = field("reply")
+    if reply is None:
+        looks_like_json = text.lstrip().startswith(("{", "```")) or '"reply"' in text
+        reply = _CUT_OFF_REPLY if looks_like_json else text.strip()
+    return {"reply": reply, "intent": field("intent"), "plan": None,
+            "remember": None, "reasoning": ""}
+
+
 def parse_model_reply(text: str) -> dict[str, Any]:
     """Extract the structured decision from a model reply, forgivingly.
 
@@ -110,8 +141,7 @@ def parse_model_reply(text: str) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValueError
     except (json.JSONDecodeError, ValueError):
-        return {"reply": text.strip(), "intent": None, "plan": None,
-                "remember": None, "reasoning": ""}
+        return _salvage_reply(text)
     plan = data.get("plan")
     if isinstance(plan, dict):
         goal = plan.get("goal")

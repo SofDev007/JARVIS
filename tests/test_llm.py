@@ -230,3 +230,39 @@ def test_parse_garbage_degrades_to_plain_reply():
 def test_parse_wrong_types_sanitised():
     decision = parse_model_reply('{"reply": "x", "intent": 42, "remember": []}')
     assert decision["intent"] is None and decision["remember"] is None
+
+
+# --- truncated replies (llm.max_tokens cut the JSON mid-plan) --------------
+def test_truncated_json_speaks_the_reply_not_the_braces():
+    """The real failure: a plan-shaped reply hit max_tokens, JSON parsing
+    failed, and the assistant read the raw JSON aloud."""
+    decision = parse_model_reply(
+        '{"reply": "Right away, Boss. Opening Airboard.", "intent": null,'
+        ' "plan": {"goal": "Open Airboard application", "steps": [{"action":'
+    )
+    assert decision["reply"] == "Right away, Boss. Opening Airboard."
+    assert decision["plan"] is None          # half a plan is not runnable
+    assert "{" not in decision["reply"]
+
+
+def test_truncated_json_keeps_a_complete_intent():
+    decision = parse_model_reply(
+        '{"reply": "Opening it now.", "intent": "open_airboard", "plan": {"go'
+    )
+    assert decision["intent"] == "open_airboard"
+
+
+def test_unreadable_json_is_not_read_aloud():
+    decision = parse_model_reply('{"repl')
+    assert decision["reply"] == "Sorry, Boss — my reply got cut off. Ask me again?"
+
+
+def test_plain_prose_is_still_the_reply():
+    decision = parse_model_reply("Half past three, Boss.")
+    assert decision["reply"] == "Half past three, Boss."
+    assert decision["intent"] is None
+
+
+def test_escapes_in_a_truncated_reply_are_decoded():
+    decision = parse_model_reply('{"reply": "He said \\"hi\\"", "plan": {"goal')
+    assert decision["reply"] == 'He said "hi"'
