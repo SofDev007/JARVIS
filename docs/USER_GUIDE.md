@@ -35,8 +35,9 @@ python main.py                     # chat, voice, actions — no camera needed
 ```
 
 Hand gestures run in the browser, not in Python. Set `airboard.enabled:
-true` in your config, start JARVIS, then open http://127.0.0.1:8794/ in
-Chrome and allow the camera. Gestures you make there (thumbs up, peace,
+true` in your config and start JARVIS. Then either say **"Jarvis, open the
+airboard"** (hands-free, no confirmation prompt) or open
+http://127.0.0.1:8794/ in Chrome yourself; allow the camera when asked. Gestures you make there (thumbs up, peace,
 pointing…) reach JARVIS like any other input; the translucent blue blob
 shows when JARVIS is listening, thinking or speaking.
 

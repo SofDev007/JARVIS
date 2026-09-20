@@ -341,6 +341,10 @@ python examples/gesture_to_intent_demo.py
 python -m pytest tests/ -q
 ```
 
+Say **"Jarvis, open the airboard"** and the board opens in your browser
+(the `open_airboard` intent -> the SAFE `open_airboard` action, which only
+ever opens this board's own loopback URL, and resumes it if paused).
+
 The Airboard page loads MediaPipe's hand-landmark model from Google's CDN
 (Apache 2.0); Python needs no camera or vision packages.
 

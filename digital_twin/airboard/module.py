@@ -71,6 +71,15 @@ class AirboardModule(BaseModule):
             raise RuntimeError("airboard is not running")
         return self._server.port
 
+    @property
+    def url(self) -> str:
+        """Where a browser on this machine should open the board. A board
+        bound to every interface is still reached over loopback."""
+        host = self._config.host
+        if host in ("0.0.0.0", "::", "[::]"):
+            host = "127.0.0.1"
+        return f"http://{host}:{self.port}/"
+
     def _on_start(self) -> None:
         self._server = AirboardServer.from_config(
             self._config, on_perception=self.on_perception, orb_source=self.orb_view)

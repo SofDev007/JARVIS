@@ -373,6 +373,9 @@ automation:
     read_screen:
       action: read_screen      # SENSITIVE: one confirmed capture + OCR
       params: {}
+    open_airboard:             # "Jarvis, open the airboard"
+      action: open_airboard    # SAFE: only ever opens this board's own URL
+      params: {}
 
 # Named per-user profiles overriding intents and the airboard gesture
 # calibration keys (thresholds, disabled gestures, repeat) only.

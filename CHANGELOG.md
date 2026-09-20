@@ -24,6 +24,10 @@ tracked hands and fought over the webcam. They are now one thing: **Airboard**.
   `chat.response`, `action.result`); the agent state files remain a fallback.
 - Config: `airboard.repeat_interval_s`, `airboard.gesture_thresholds`,
   `airboard.disabled_gestures`.
+- **"Jarvis, open the airboard"** — the `open_airboard` intent binding and
+  a matching SAFE action (`digital_twin/airboard/actions.py`). It takes no
+  parameters and can only open this board's own loopback URL, so it needs
+  no confirmation and stays hands-free; it resumes a paused board first.
 
 ### Security
 - Airboard server: loopback **Host allowlist** on every request (DNS

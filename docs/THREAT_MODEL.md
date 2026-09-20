@@ -566,6 +566,15 @@ preflight), and a DNS-rebinding page could also read notes via `GET /note`.
   frame is dropped whole. Gesture events still pass through the dispatcher's
   permission policy and confirmation gates like any other intent.
 
+**Opening the board by voice.** `open_airboard` is deliberately SAFE (no
+confirmation), which is sound because it is parameterless and can only
+open *this* board's own loopback URL — there is no attacker-chosen
+destination, so §4.5's rule still holds: voice never authorizes anything
+sensitive. It does put a camera page on screen, but the browser's own
+permission prompt still gates the camera, and the blob makes an active
+board visible. Anyone who can speak to the assistant could equally open
+the page by hand.
+
 **Residual:** a local process (T1) can still post gestures, exactly as
 it could already drive `/cmd` or type keystrokes. Covered by B1, not by
 this server. Tests: `tests/test_airboard.py` (foreign Host, cross-origin

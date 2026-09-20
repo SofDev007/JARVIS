@@ -532,6 +532,7 @@ class AutomationConfig:
                 "params": {"keys": ["escape"]},
             },
             "read_screen": {"action": "read_screen", "params": {}},
+            "open_airboard": {"action": "open_airboard", "params": {}},
         }
     )
     """``intent -> {action, params}``. Intents without a binding are audited

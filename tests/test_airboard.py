@@ -11,12 +11,18 @@ import urllib.request
 
 import pytest
 
+from digital_twin.airboard.actions import register_airboard_actions
 from digital_twin.airboard.module import AirboardModule
 from digital_twin.airboard.orbs import Orb
 from digital_twin.airboard.server import AirboardServer, parse_perception
-from digital_twin.configuration.settings import AirboardConfig
+from digital_twin.automation.dispatcher import ActionDispatcher
+from digital_twin.automation.registry import ActionRegistry
+from digital_twin.configuration.settings import AirboardConfig, AutomationConfig
 from digital_twin.core.bus import EventBus
 from digital_twin.core.events import Event, Topics
+from digital_twin.security.audit import AuditLog
+from digital_twin.security.confirmation import ScriptedConfirmation
+from digital_twin.security.permissions import PermissionPolicy, RiskLevel
 
 
 def _get(port: int, path: str, headers: dict | None = None):
@@ -434,3 +440,92 @@ def test_from_config_carries_remote_access_settings(tmp_path):
         assert _get(srv.port, "/config", host)[0] == 200
     finally:
         srv.stop()
+
+
+# ---------------------------------------------------------------------------
+# "Jarvis, open the airboard": the open_airboard action
+# ---------------------------------------------------------------------------
+def _opener():
+    opened = []
+    return opened, lambda url: (opened.append(url), True)[1]
+
+
+def test_open_airboard_opens_the_boards_own_url(tmp_path, bus):
+    module = _board(tmp_path, bus)
+    try:
+        opened, opener = _opener()
+        registry = ActionRegistry()
+        register_airboard_actions(registry, module, opener)
+        spec = registry.get("open_airboard")
+        assert spec.risk is RiskLevel.SAFE      # hands-free: no confirmation
+        detail = spec.handler({})
+        assert opened == [f"http://127.0.0.1:{module.port}/"]
+        assert "opened the air board" in detail
+    finally:
+        module.stop()
+
+
+def test_open_airboard_resumes_a_paused_board(tmp_path, bus):
+    module = _board(tmp_path, bus)
+    try:
+        module.pause()
+        opened, opener = _opener()
+        registry = ActionRegistry()
+        register_airboard_actions(registry, module, opener)
+        registry.get("open_airboard").handler({})
+        assert module.is_active
+        assert opened == [module.url]
+    finally:
+        module.stop()
+
+
+def test_open_airboard_reports_a_stopped_board_instead_of_opening(tmp_path, bus):
+    module = _board(tmp_path, bus)
+    module.stop()
+    opened, opener = _opener()
+    registry = ActionRegistry()
+    register_airboard_actions(registry, module, opener)
+    detail = registry.get("open_airboard").handler({})
+    assert opened == [] and "not running" in detail
+
+
+def test_url_sends_the_browser_to_loopback_for_a_wildcard_bind(tmp_path, bus):
+    module = _board(tmp_path, bus, host="0.0.0.0", allow_remote=True)
+    try:
+        assert module.url == f"http://127.0.0.1:{module.port}/"
+    finally:
+        module.stop()
+
+
+def test_spoken_intent_reaches_the_action(tmp_path, bus):
+    """End to end on the path a voice command takes: the reasoner publishes
+    intent.detected, the dispatcher gates it, the board opens."""
+    module = _board(tmp_path, bus)
+    opened, opener = _opener()
+    registry = ActionRegistry()
+    register_airboard_actions(registry, module, opener)
+    dispatcher = ActionDispatcher(
+        config=AutomationConfig(
+            intent_bindings={"open_airboard": {"action": "open_airboard", "params": {}}}),
+        registry=registry,
+        policy=PermissionPolicy(
+            risk_defaults={"safe": "allow", "sensitive": "confirm",
+                           "dangerous": "deny"}),
+        confirmation=ScriptedConfirmation([]),
+        audit=AuditLog(tmp_path / "audit.jsonl"),
+    )
+    results = []
+    bus.subscribe(Topics.ACTION_RESULT, results.append)
+    dispatcher.start(bus)
+    try:
+        bus.publish(Event(Topics.INTENT, "reasoner", {
+            "intent": "open_airboard", "context": "desktop"}))
+        deadline = time.time() + 5
+        while not results and time.time() < deadline:
+            time.sleep(0.02)
+        bus.flush(timeout=2.0)
+        assert [r.payload["status"] for r in results] == ["completed"]
+        assert opened == [module.url]          # no confirmation prompt
+    finally:
+        dispatcher.stop()
+        module.stop()
